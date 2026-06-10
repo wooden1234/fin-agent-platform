@@ -76,16 +76,60 @@ def load_documents(file_path: Path) -> List[Document]:
         # section 可在分块后从标题再 enrich，或先留空
     return docs
 
-def chunk_documents(docs: List[Document], chunk_size: int = 512, chunk_overlap: int = 64) -> List[TextNode]:
-    text_splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    return text_splitter.get_nodes_from_documents(docs)
+# 在 _HEADING_RE 附近增加
+_Q_HEADING_RE = re.compile(r"^### Q\d+.*$", re.MULTILINE)
+
+
+def _section_from_q_heading(line: str) -> str:
+    """'### Q1：A股交易时间如何安排？' -> 'Q1：A股交易时间如何安排？'"""
+    return re.sub(r"^###\s+", "", line.strip())
+
+
+def chunk_documents(
+    docs: List[Document],
+    chunk_size: int = 512,
+    chunk_overlap: int = 64,
+) -> List[TextNode]:
+    """按 ### Q 切题；文首（# 标题、> 引用、## 章节）不生成 node。
+    单题过长时，仅在题内再用 SentenceSplitter 二次切分。
+    """
+    splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    nodes: list[TextNode] = []
+
+    for doc in docs:
+        text = doc.get_content(metadata_mode="none")
+        matches = list(_Q_HEADING_RE.finditer(text))
+        if not matches:
+            continue  # 无 ### Q 的文档跳过（或可打 warning）
+
+        base_meta = dict(doc.metadata)
+
+        for i, m in enumerate(matches):
+            start = m.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            q_text = text[start:end].strip()
+            if not q_text:
+                continue
+
+            section = _section_from_q_heading(m.group(0))
+            meta = {**base_meta, "section": section}
+
+            if len(q_text) <= chunk_size:
+                nodes.append(TextNode(text=q_text, metadata=meta))
+            else:
+                # 超长单题：只在题内切，避免跨题粘连
+                sub_doc = Document(text=q_text, metadata=meta)
+                for sub in splitter.get_nodes_from_documents([sub_doc]):
+                    sub.metadata.update(meta)
+                    nodes.append(sub)
+
+    return nodes
 
 
 def run_ingest(raw_dir: Path | None = None) -> list[TextNode]:
     raw_dir = raw_dir or RAW_DIR
     docs = load_documents(raw_dir)
     nodes = chunk_documents(docs)
-    enrich_section_metadata(nodes, docs)
     print("section:", nodes[0].metadata.get("section"))
     return nodes
 

@@ -19,3 +19,15 @@ requires_embedding_key = pytest.mark.skipif(
     not _has_embedding_api_key(),
     reason="未配置 QWEN_API_KEY / DASHSCOPE_API_KEY，跳过 Embedding 集成测试",
 )
+
+
+def _has_llm_api_key() -> bool:
+    import os
+
+    return bool(os.getenv("DEEPSEEK_API_KEY"))
+
+
+requires_llm_key = pytest.mark.skipif(
+    not _has_llm_api_key(),
+    reason="未配置 DEEPSEEK_API_KEY，跳过 Supervisor LLM 集成测试",
+)
