@@ -59,6 +59,7 @@ global:
     narrative: "【{title} | {section_path} | 第{page_num}页】"
     table: "【表格 | {title} | {section_path} | 第{page_num}页】"
     chart: "【图表 | {title} | {section_path} | 第{page_num}页】"
+    image: "【图片 | {title} | {section_path} | 第{page_num}页】"
 
   # 切块
   chunk:

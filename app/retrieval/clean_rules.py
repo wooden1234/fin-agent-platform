@@ -63,11 +63,17 @@ class CleanRuleSet:
         for name, cfg in raw.get("categories", {}).items():
             cover = cfg.get("cover", {})
             cat_table_cfg = {**global_table, **cfg.get("table", {})}
+            cat_drop = (
+                set(cfg["drop_block_types"])
+                if "drop_block_types" in cfg
+                else base_drop
+            )
+            cat_keep = base_keep | set(cfg.get("keep_block_types", []))
             categories[name] = CategoryRules(
                 name=name,
                 chunk_strategy=cfg.get("chunk_strategy", "section"),
-                drop_block_types=base_drop,
-                keep_block_types=base_keep,
+                drop_block_types=cat_drop,
+                keep_block_types=cat_keep,
                 noise_paragraph_patterns=_compile_patterns(
                     list(global_cfg.get("noise_paragraph_patterns", []))
                     + list(cfg.get("noise_paragraph_patterns", []))
@@ -131,7 +137,26 @@ def _extract_text_from_block(block: dict[str, Any]) -> str:
         return content.get("html", "") or ""
     if btype == "chart":
         return _extract_chart_text(block)
+    if btype == "image":
+        return _extract_image_text(block)
     return block.get("text", "").strip()
+
+
+def _extract_image_text(block: dict[str, Any]) -> str:
+    content = block.get("content", {})
+    parts: list[str] = []
+    for key in ("image_caption", "image_footnote"):
+        for item in content.get(key) or []:
+            text = item.get("content", "").strip()
+            if text:
+                parts.append(text)
+    body = (content.get("content") or "").strip()
+    if body:
+        parts.append(body)
+    sub_type = block.get("sub_type")
+    if sub_type:
+        parts.insert(0, f"[{sub_type}]")
+    return "\n".join(parts).strip()
 
 
 def _extract_chart_text(block: dict[str, Any]) -> str:
@@ -189,6 +214,65 @@ def should_skip_section(title: str, rules: CategoryRules) -> bool:
     return False
 
 
+_FIRST_SENTENCE_RE = re.compile(r"^(.+?)(?:[。！？；：]|$)", re.DOTALL)
+_FALLBACK_MAX_LEN = 80
+
+
+def _first_sentence(text: str, max_len: int = _FALLBACK_MAX_LEN) -> str:
+    """取正文第一句（至 。！？；： 或 max_len）。"""
+    t = text.strip()
+    if not t:
+        return ""
+    m = _FIRST_SENTENCE_RE.match(t)
+    sentence = (m.group(1) if m else t).strip()
+    if len(sentence) > max_len:
+        return sentence[:max_len].rstrip()
+    return sentence
+
+
+def _chart_caption_from_text(text: str) -> str:
+    for line in text.splitlines():
+        ln = line.strip()
+        if not ln or ln.startswith("[") or ln.startswith("|") or ln.startswith("```"):
+            continue
+        return ln
+    return ""
+
+
+def _table_caption_from_html(html: str) -> str:
+    plain = re.sub(r"<[^>]+>", " ", html)
+    plain = re.sub(r"\s+", " ", plain).strip()
+    return _first_sentence(plain)
+
+
+def _fallback_section_path(
+    block_type: str,
+    text: str,
+    *,
+    caption: str = "",
+) -> str:
+    """无前置 title 时，从块内容推断章节名。"""
+    if block_type == "chart":
+        return caption.strip() or _chart_caption_from_text(text)
+    if block_type == "table":
+        return caption.strip() or _table_caption_from_html(text)
+    if block_type in ("paragraph", "list"):
+        return _first_sentence(text)
+    return ""
+
+
+def _resolve_section_path(
+    section_path: str,
+    block_type: str,
+    text: str,
+    *,
+    caption: str = "",
+) -> str:
+    if section_path:
+        return section_path
+    return _fallback_section_path(block_type, text, caption=caption)
+
+
 def classify_table(html: str, caption: str, section_path: str, rules: CategoryRules) -> str:
     blob = f"{caption} {section_path} {html}"
     for kw in rules.table.skip_keywords:
@@ -220,6 +304,7 @@ class CleanStats:
     dropped_skip_section: int
     tables: dict[str, int]
     charts: int
+    images: int
     kept_blocks: int
 
     def summary(self) -> str:
@@ -231,28 +316,63 @@ class CleanStats:
             f"dropped_by_type={self.dropped_by_type}",
             f"tables={self.tables}",
             f"charts={self.charts}",
+            f"images={self.images}",
         ]
         return "\n".join(lines)
 
 
-def analyze_document(
+def _format_table_text(block: dict[str, Any], html: str) -> str:
+    content = block.get("content", {})
+    parts: list[str] = []
+    for key in ("table_caption", "table_footnote"):
+        for item in content.get(key) or []:
+            if isinstance(item, dict):
+                text = item.get("content", "").strip()
+            else:
+                text = str(item).strip()
+            if text:
+                parts.append(text)
+    if html.strip():
+        parts.append(html.strip())
+    return "\n".join(parts).strip()
+
+
+@dataclass
+class ExtractedBlock:
+    block_type: str
+    text: str
+    section_path: str
+    page_idx: int
+    page_label: str | None = None
+    table_class: str | None = None
+
+
+@dataclass
+class ExtractResult:
+    blocks: list[ExtractedBlock]
+    stats: CleanStats
+
+
+def extract_blocks(
     pages: list[list[dict[str, Any]]],
     category: str,
     ruleset: CleanRuleSet | None = None,
     *,
     part_start: int = 1,
-) -> CleanStats:
-    """ dry-run：统计规则命中情况，不写库。"""
+) -> ExtractResult:
+    """按 clean_rules 过滤并返回保留的正文 block 列表。"""
     ruleset = ruleset or load_rules()
     rules = ruleset.for_category(category)
 
     dropped_by_type: dict[str, int] = {}
     tables: dict[str, int] = {"skip": 0, "normal": 0, "financial": 0}
     charts = 0
+    images = 0
     dropped_noise = 0
     dropped_cover = 0
     dropped_section = 0
     kept = 0
+    extracted: list[ExtractedBlock] = []
 
     seen_level1 = False
     skip_current_section = False
@@ -300,6 +420,33 @@ def analyze_document(
                 if not cleaned:
                     dropped_noise += 1
                     continue
+                extracted.append(
+                    ExtractedBlock(
+                        block_type="paragraph",
+                        text=cleaned,
+                        section_path=_resolve_section_path(
+                            section_path, "paragraph", cleaned
+                        ),
+                        page_idx=page_idx,
+                        page_label=page_label or None,
+                    )
+                )
+                kept += 1
+                continue
+
+            if btype == "list":
+                text = _extract_text_from_block(block)
+                if not text:
+                    continue
+                extracted.append(
+                    ExtractedBlock(
+                        block_type="list",
+                        text=text,
+                        section_path=_resolve_section_path(section_path, "list", text),
+                        page_idx=page_idx,
+                        page_label=page_label or None,
+                    )
+                )
                 kept += 1
                 continue
 
@@ -309,32 +456,118 @@ def analyze_document(
                 content = block.get("content", {})
                 caps = content.get("table_caption") or []
                 if caps:
-                    caption = " ".join(str(c) for c in caps)
+                    caption = " ".join(
+                        c.get("content", str(c)) if isinstance(c, dict) else str(c)
+                        for c in caps
+                    )
                 tclass = classify_table(html, caption, section_path, rules)
                 tables[tclass] = tables.get(tclass, 0) + 1
-                if tclass != "skip":
-                    kept += 1
+                if tclass == "skip":
+                    continue
+                text = _format_table_text(block, html)
+                if not text:
+                    continue
+                extracted.append(
+                    ExtractedBlock(
+                        block_type="table",
+                        text=text,
+                        section_path=_resolve_section_path(
+                            section_path, "table", text, caption=caption
+                        ),
+                        page_idx=page_idx,
+                        page_label=page_label or None,
+                        table_class=tclass,
+                    )
+                )
+                kept += 1
                 continue
 
             if btype == "chart":
                 text = _extract_text_from_block(block)
-                if text:
-                    charts += 1
-                    kept += 1
+                if not text:
+                    continue
+                charts += 1
+                chart_caption = ""
+                content = block.get("content", {})
+                caps = content.get("chart_caption") or []
+                if caps:
+                    chart_caption = " ".join(
+                        c.get("content", str(c)) if isinstance(c, dict) else str(c)
+                        for c in caps
+                    )
+                extracted.append(
+                    ExtractedBlock(
+                        block_type="chart",
+                        text=text,
+                        section_path=_resolve_section_path(
+                            section_path, "chart", text, caption=chart_caption
+                        ),
+                        page_idx=page_idx,
+                        page_label=page_label or None,
+                    )
+                )
+                kept += 1
+                continue
+
+            if btype == "image":
+                text = _extract_text_from_block(block)
+                if not text:
+                    continue
+                images += 1
+                extracted.append(
+                    ExtractedBlock(
+                        block_type="image",
+                        text=text,
+                        section_path=_resolve_section_path(
+                            section_path, "image", text
+                        ),
+                        page_idx=page_idx,
+                        page_label=page_label or None,
+                    )
+                )
+                kept += 1
                 continue
 
             if btype in rules.keep_block_types:
-                kept += 1
+                text = _extract_text_from_block(block)
+                if text:
+                    extracted.append(
+                        ExtractedBlock(
+                            block_type=btype,
+                            text=text,
+                            section_path=_resolve_section_path(
+                                section_path, btype, text
+                            ),
+                            page_idx=page_idx,
+                            page_label=page_label or None,
+                        )
+                    )
+                    kept += 1
 
-    return CleanStats(
+    stats = CleanStats(
         dropped_by_type=dropped_by_type,
         dropped_noise_paragraph=dropped_noise,
         dropped_cover_paragraph=dropped_cover,
         dropped_skip_section=dropped_section,
         tables=tables,
         charts=charts,
+        images=images,
         kept_blocks=kept,
     )
+    return ExtractResult(blocks=extracted, stats=stats)
+
+
+def analyze_document(
+    pages: list[list[dict[str, Any]]],
+    category: str,
+    ruleset: CleanRuleSet | None = None,
+    *,
+    part_start: int = 1,
+) -> CleanStats:
+    """dry-run：统计规则命中情况，不写库。"""
+    return extract_blocks(
+        pages, category, ruleset, part_start=part_start
+    ).stats
 
 
 @lru_cache(maxsize=1)
