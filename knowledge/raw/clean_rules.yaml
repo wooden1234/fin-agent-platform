@@ -1,0 +1,174 @@
+# PDF 清洗规则 — ingest_pdf.py 使用
+# 按「全局 + category」分层，不按单文档定制
+version: "1.0"
+updated: "2026-06-14"
+source_file: content_list_v2.json  # 优先；fallback: content_list.json
+
+# ---------------------------------------------------------------------------
+# 全局规则（所有 PDF category 生效）
+# ---------------------------------------------------------------------------
+global:
+  # 整块丢弃的 block type（不进正文）
+  drop_block_types:
+    - page_header
+    - page_footer
+    - image
+
+  # page_number 不进正文，写入 chunk metadata
+  page_number_to_metadata: true
+
+  # 保留并参与切块的 block type
+  keep_block_types:
+    - title
+    - paragraph
+    - list
+    - table
+    - chart
+
+  # 全局 paragraph 噪声（正则，命中任一则丢弃整段）
+  noise_paragraph_patterns:
+    - "^[□√\\s否是适用不适用]+$"
+    - "^[□√]\\s*(是|否|适用|不适用)"
+    - "^(是|否|适用|不适用)$"
+
+  # 混合段落：去掉尾部 checkbox 符号，保留前面文字
+  strip_checkbox_suffix: true
+
+  # 表格分类（所有 category 共用关键词，category 可追加）
+  table:
+    skip_keywords:
+      - 备查文件
+      - 释义
+      - 联系方式
+      - 信息披露
+      - 公司基本信息
+    financial_keywords:
+      - 资产负债表
+      - 利润表
+      - 现金流量表
+      - 股东权益
+      - 主要财务指标
+      - 合并利润表
+      - 合并资产负债表
+      - 合并现金流量表
+    # skip | normal | financial
+    default_class: normal
+
+  # chunk 文本前缀模板（{title} {ticker} {fiscal_year} {section_path} {page_num}）
+  chunk_prefix:
+    narrative: "【{title} | {section_path} | 第{page_num}页】"
+    table: "【表格 | {title} | {section_path} | 第{page_num}页】"
+    chart: "【图表 | {title} | {section_path} | 第{page_num}页】"
+
+  # 切块
+  chunk:
+    max_chars: 512
+    overlap: 64
+    embed_section_in_text: true
+
+  # 页码：优先 page_idx；拆页时用 part_start + page_idx
+  page:
+    use_page_idx: true
+    use_printed_page_number: true  # 有则写入 page_label
+
+# ---------------------------------------------------------------------------
+# 按 category 追加/覆盖规则
+# ---------------------------------------------------------------------------
+categories:
+  annual_reports:
+    chunk_strategy: table_aware
+    cover:
+      skip_before_first_level1_title: false
+    noise_paragraph_patterns:
+      - "^[□√\\s否是适用不适用]+$"
+      - "^[□√]\\s*(是|否|适用|不适用)"
+    skip_section_keywords:
+      - 释义
+      - 备查文件目录
+    table:
+      skip_keywords:
+        - 备查文件
+        - 释义
+        - 常用词语
+        - 联系方式
+        - 公司基本信息
+      financial_keywords:
+        - 资产负债表
+        - 利润表
+        - 现金流量表
+        - 股东权益变动
+        - 主要会计数据
+        - 主要财务指标
+        - 合并利润表
+        - 合并资产负债表
+        - 合并现金流量表
+        - 母公司利润表
+        - 母公司资产负债表
+
+  research_reports:
+    chunk_strategy: section
+    cover:
+      # 封面一级标题出现前的 paragraph 视为模板噪声
+      skip_before_first_level1_title: true
+    noise_paragraph_patterns:
+      - "S\\d{13}"                      # 执业编号
+      - "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"  # 邮箱
+      - "^(研究所|联系人|证券分析师)[：:]?"
+      - "^评级[：:]"
+      - "^行业研究$"
+      - "^\\d{4}\\s*年\\s*\\d{1,2}\\s*月\\s*\\d{1,2}\\s*日$"  # 封面日期
+      - "^《.+》——\\d{4}-\\d{2}-\\d{2}$"  # 相关报告列表
+    skip_section_keywords:
+      - 相关报告
+      - 分析师承诺
+      - 免责声明
+      - 郑重声明
+      - 投资评级标准
+      - 国海证券投资评级标准
+      - 小组介绍
+      - 分析师简介
+      - 法律声明
+      - 评级说明
+    table:
+      skip_keywords:
+        - 行业相对表现
+        - 免责声明
+      financial_keywords:
+        - 盈利预测
+        - 财务摘要
+        - 估值
+
+  macro_research:
+    chunk_strategy: section
+    cover:
+      skip_before_first_level1_title: false
+    noise_paragraph_patterns: []
+    skip_section_keywords:
+      - 免责声明
+    table:
+      skip_keywords: []
+      financial_keywords:
+        - 主要指标
+        - 统计数据
+
+  industry_whitepapers:
+    chunk_strategy: section
+    cover:
+      skip_before_first_level1_title: false
+    noise_paragraph_patterns: []
+    skip_section_keywords:
+      - 免责声明
+      - 关于作者
+    table:
+      skip_keywords: []
+      financial_keywords: []
+
+  policy:
+    chunk_strategy: section
+    cover:
+      skip_before_first_level1_title: false
+    noise_paragraph_patterns: []
+    skip_section_keywords: []
+    table:
+      skip_keywords: []
+      financial_keywords: []

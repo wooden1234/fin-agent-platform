@@ -1,0 +1,101 @@
+# Financial RAG — Root Manifest
+version: "3.1"
+updated: "2026-06-14"
+
+# Split manifests — MD and PDF are managed separately
+manifests:
+  md: manifest_md.yaml
+  pdf: manifest_pdf.yaml
+
+indexes:
+  root: INDEX.md
+  md: INDEX_MD.md
+  pdf: INDEX_PDF.md
+
+summary:
+  md_documents: 40
+  pdf_documents: 33
+  pdf_parsed: 33
+  pdf_parsed_parts: 41          # 年报 8 份拆成 16 段 + 其余 25 份单段
+  pdf_ingestable: 33
+  pdf_pending_ocr: 0
+  vector_ingested: false          # ingest_pdf.py 待跑
+
+# PDF 解析流水线（MinerU → 解压 → 切块入库）
+pipeline:
+  stages:
+    - name: extract
+      tool: app/retrieval/mineru.py
+      output: knowledge/parsed/*.zip
+      status: done
+    - name: unzip
+      tool: scripts/unzip_parsed.py
+      output: knowledge/parsed/*/full.md
+      status: done
+    - name: clean
+      tool: app/retrieval/clean_rules.py
+      config: knowledge/raw/clean_rules.yaml
+      status: ready
+    - name: ingest
+      tool: app/retrieval/ingest_pdf.py
+      output: pgvector (fin_faq_vectors)
+      status: pending
+
+agents:
+  policy_agent:
+    format: md
+    manifest: manifest_md.yaml
+    index: INDEX_MD.md
+    domains: [capital_market, corporate_finance]
+    retrieval_filter: "format=md"
+  pdf_agent:
+    format: pdf
+    manifest: manifest_pdf.yaml
+    index: INDEX_PDF.md
+    categories: [macro_research, annual_reports, research_reports, industry_whitepapers, policy]
+    retrieval_filter: "format=pdf"
+    parsed_root: knowledge/parsed
+  db_agent:
+    format: pdf
+    manifest: manifest_pdf.yaml
+    categories: [annual_reports]
+    storage: sql
+    note: structured metrics only, not vector retrieval
+  sql_agent:
+    storage: sql
+    model: deepseek_api
+    note: Text-to-SQL over financial metrics table
+
+routing:
+  - intent: rules, compliance, reimbursement, trading rules
+    agent: policy_agent
+    filter: "format=md"
+  - intent: company financials, revenue, profit comparison
+    agents: [db_agent, pdf_agent]
+    filter: "format=pdf AND category=annual_reports"
+  - intent: macro policy, monetary policy
+    agent: pdf_agent
+    filter: "format=pdf AND category=macro_research"
+  - intent: industry research, broker views
+    agent: pdf_agent
+    filter: "format=pdf AND category=research_reports"
+  - intent: industry whitepaper
+    agent: pdf_agent
+    filter: "format=pdf AND category=industry_whitepapers"
+  - intent: government policy, industrial planning
+    agent: pdf_agent
+    filter: "format=pdf AND category=policy"
+
+metadata_layers:
+  document_level:
+    source: manifest_pdf.yaml / manifest_md.yaml
+    fields: [doc_id, title, category, ticker, fiscal_year, authority_tier, chunk_strategy]
+  chunk_level:
+    source: ingest script auto-generated
+    fields: [section_path, page_range, part_index, chunk_index, source]
+
+shared:
+  notices: _shared/
+  files:
+    - _shared/CAPITAL_MARKET_NOTICE.md
+    - _shared/CORPORATE_FINANCE_NOTICE.md

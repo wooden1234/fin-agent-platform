@@ -1,0 +1,509 @@
+# PDF ingestion manifest — PDF Agent / DB Agent
+version: "1.1"
+format: pdf
+updated: "2026-06-14"
+index: INDEX_PDF.md
+total_documents: 33
+parsed_documents: 33
+ingestable: 33
+pending_ocr: 0
+
+# MinerU 解析 → 解压 → ingest 流水线
+parse_pipeline:
+  raw_dir: knowledge/raw
+  parsed_dir: knowledge/parsed
+  extract_manifest: knowledge/parsed/extract_manifest.json
+  clean_rules: knowledge/raw/clean_rules.yaml
+  mineru_max_pages: 200
+  scripts:
+    extract: app/retrieval/mineru.py
+    unzip: scripts/unzip_parsed.py
+    clean: app/retrieval/clean_rules.py
+    ingest: app/retrieval/ingest_pdf.py  # 待实现
+
+layout:
+  macro_research: macro_research/
+  industry_whitepapers: industry_whitepapers/
+  annual_reports: annual_reports/
+  research_reports: research_reports/
+  policy: policy/
+
+agents:
+  pdf_agent:
+    categories: [macro_research, annual_reports, research_reports, industry_whitepapers, policy]
+  db_agent:
+    categories: [annual_reports]
+    note: structured financial metrics extracted to SQL, not vector store
+
+metadata_schema:
+  # 文档级：在 manifest documents 中维护
+  required:
+    - format          # 固定 "pdf"
+    - doc_id          # 全局唯一编号
+    - title           # 文档标题
+    - category        # macro_research | annual_reports | research_reports | industry_whitepapers | policy
+    - file            # 原始 PDF 相对路径
+    - parse_status    # ok | ocr_required | pending
+    - extract_status  # pending | done | failed
+    - ingest          # 是否写入向量库
+    - authority_tier  # official | broker | vendor
+    - chunk_strategy  # section | table_aware
+  optional:
+    - ticker          # 股票代码（年报）
+    - fiscal_year     # 报告年度（年报）
+    - effective_date  # 发布/生效日期
+    - issuer          # 发布机构（研报）
+    - language        # zh-CN | zh-TW
+    - doc_group       # 逻辑文档组（拆页后合并用，默认等于 PDF 文件名 stem）
+    - total_pages     # 原始 PDF 总页数
+    - parsed_path     # 解压后 full.md 目录（单文件）
+    - parts           # 拆页分段列表（年报等多段文档）
+  # 切片级：ingest 脚本自动生成，写入每个 chunk
+  chunk_runtime:
+    - section_path    # 章节路径，如 "管理层讨论与分析 > 风险因素"
+    - page_range      # 页码范围，如 "001-200"
+    - part_index      # 分段序号，从 1 开始
+    - chunk_index     # 文档内 chunk 序号
+    - source          # 来源目录/文件名
+
+matching_rules:
+  parsed_root: knowledge/parsed
+  # 拆页目录名：{doc_group}_p{start:03d}-{end:03d} → 匹配 file: {category}/{doc_group}.pdf
+  split_pattern: "_p(?P<start>\\d{3})-(?P<end>\\d{3})$"
+  embed_metadata_in_chunk: true
+
+categories:
+  macro_research:
+    path: macro_research/
+    label: Macro Research
+    files: 3
+    parsed: 3
+    ingest: true
+    parse_status: ok
+    extract_status: done
+    authority_tier: official
+    chunk_strategy: section
+    agent: pdf_agent
+  annual_reports:
+    path: annual_reports/
+    label: Annual Reports
+    files: 8
+    parsed_parts: 16
+    ingest: true
+    parse_status: ok
+    extract_status: done
+    authority_tier: official
+    chunk_strategy: table_aware
+    split_required: true
+    agents: [pdf_agent, db_agent]
+  research_reports:
+    path: research_reports/
+    label: Research Reports
+    files: 6
+    parsed: 6
+    ingest: true
+    parse_status: ok
+    extract_status: done
+    authority_tier: broker
+    chunk_strategy: section
+    agent: pdf_agent
+  industry_whitepapers:
+    path: industry_whitepapers/
+    label: Industry Whitepapers
+    files: 7
+    parsed: 7
+    ingest: true
+    parse_status: ok
+    extract_status: done
+    authority_tier: vendor
+    chunk_strategy: section
+    agent: pdf_agent
+  policy:
+    path: policy/
+    label: Policy Documents
+    files: 9
+    parsed: 9
+    ingest: true
+    parse_status: ok
+    extract_status: done
+    authority_tier: official
+    chunk_strategy: section
+    agent: pdf_agent
+
+ingestion_rules:
+  include_globs:
+    - macro_research/*.pdf
+    - annual_reports/*.pdf
+    - research_reports/*.pdf
+    - industry_whitepapers/*.pdf
+    - policy/*.pdf
+  parsed_globs:
+    - knowledge/parsed/macro_research/*/full.md
+    - knowledge/parsed/annual_reports/*/full.md
+    - knowledge/parsed/research_reports/*/full.md
+    - knowledge/parsed/industry_whitepapers/*/full.md
+    - knowledge/parsed/policy/*/full.md
+  exclude_globs:
+    - knowledge/parsed/_splits/**
+  embed_metadata_in_chunk: true
+  default_metadata:
+    format: pdf
+
+documents:
+  macro_research:
+    - file: macro_research/PBOC_Regional_Financial_Operations_Report_2024.pdf
+      doc_id: PDF-MACRO-01
+      title: PBOC Regional Financial Operations Report 2024
+      effective_date: "2024-07"
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/macro_research/PBOC_Regional_Financial_Operations_Report_2024
+    - file: macro_research/PBOC_Financial_Stability_Report_2022.pdf
+      doc_id: PDF-MACRO-02
+      title: PBOC Financial Stability Report 2022
+      effective_date: "2022-07"
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/macro_research/PBOC_Financial_Stability_Report_2022
+    - file: macro_research/PBOC_Monetary_Policy_Report_2026Q1.pdf
+      doc_id: PDF-MACRO-03
+      title: PBOC Monetary Policy Report 2026 Q1
+      effective_date: "2026-Q1"
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/macro_research/PBOC_Monetary_Policy_Report_2026Q1
+
+  annual_reports:
+    - file: annual_reports/Tencent_Annual_Report_2024.pdf
+      doc_id: PDF-AR-TCEHY-2024
+      title: Tencent Annual Report 2024
+      ticker: TCEHY
+      fiscal_year: 2024
+      language: zh-TW
+      doc_group: Tencent_Annual_Report_2024
+      total_pages: 274
+      authority_tier: official
+      chunk_strategy: table_aware
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parts:
+        - { page_range: "001-200", part_index: 1, parsed_path: knowledge/parsed/annual_reports/Tencent_Annual_Report_2024_p001-200 }
+        - { page_range: "201-274", part_index: 2, parsed_path: knowledge/parsed/annual_reports/Tencent_Annual_Report_2024_p201-274 }
+    - file: annual_reports/Tencent_Annual_Report_2025.pdf
+      doc_id: PDF-AR-TCEHY-2025
+      title: Tencent Annual Report 2025
+      ticker: TCEHY
+      fiscal_year: 2025
+      language: zh-TW
+      doc_group: Tencent_Annual_Report_2025
+      total_pages: 282
+      authority_tier: official
+      chunk_strategy: table_aware
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parts:
+        - { page_range: "001-200", part_index: 1, parsed_path: knowledge/parsed/annual_reports/Tencent_Annual_Report_2025_p001-200 }
+        - { page_range: "201-282", part_index: 2, parsed_path: knowledge/parsed/annual_reports/Tencent_Annual_Report_2025_p201-282 }
+    - file: annual_reports/CATL_Annual_Report_2024.pdf
+      doc_id: PDF-AR-CATL-2024
+      title: CATL Annual Report 2024
+      ticker: CATL
+      fiscal_year: 2024
+      language: zh-CN
+      doc_group: CATL_Annual_Report_2024
+      total_pages: 229
+      authority_tier: official
+      chunk_strategy: table_aware
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parts:
+        - { page_range: "001-200", part_index: 1, parsed_path: knowledge/parsed/annual_reports/CATL_Annual_Report_2024_p001-200 }
+        - { page_range: "201-229", part_index: 2, parsed_path: knowledge/parsed/annual_reports/CATL_Annual_Report_2024_p201-229 }
+    - file: annual_reports/CATL_Annual_Report_2025.pdf
+      doc_id: PDF-AR-CATL-2025
+      title: CATL Annual Report 2025
+      ticker: CATL
+      fiscal_year: 2025
+      language: zh-CN
+      doc_group: CATL_Annual_Report_2025
+      total_pages: 274
+      authority_tier: official
+      chunk_strategy: table_aware
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parts:
+        - { page_range: "001-200", part_index: 1, parsed_path: knowledge/parsed/annual_reports/CATL_Annual_Report_2025_p001-200 }
+        - { page_range: "201-274", part_index: 2, parsed_path: knowledge/parsed/annual_reports/CATL_Annual_Report_2025_p201-274 }
+    - file: annual_reports/Cambricon_Annual_Report_2024.pdf
+      doc_id: PDF-AR-688256-2024
+      title: Cambricon Annual Report 2024
+      ticker: "688256"
+      fiscal_year: 2024
+      language: zh-CN
+      doc_group: Cambricon_Annual_Report_2024
+      total_pages: 239
+      authority_tier: official
+      chunk_strategy: table_aware
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parts:
+        - { page_range: "001-200", part_index: 1, parsed_path: knowledge/parsed/annual_reports/Cambricon_Annual_Report_2024_p001-200 }
+        - { page_range: "201-239", part_index: 2, parsed_path: knowledge/parsed/annual_reports/Cambricon_Annual_Report_2024_p201-239 }
+    - file: annual_reports/Cambricon_Annual_Report_2025.pdf
+      doc_id: PDF-AR-688256-2025
+      title: Cambricon Annual Report 2025
+      ticker: "688256"
+      fiscal_year: 2025
+      language: zh-CN
+      doc_group: Cambricon_Annual_Report_2025
+      total_pages: 219
+      authority_tier: official
+      chunk_strategy: table_aware
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parts:
+        - { page_range: "001-200", part_index: 1, parsed_path: knowledge/parsed/annual_reports/Cambricon_Annual_Report_2025_p001-200 }
+        - { page_range: "201-219", part_index: 2, parsed_path: knowledge/parsed/annual_reports/Cambricon_Annual_Report_2025_p201-219 }
+    - file: annual_reports/Loongson_Annual_Report_2024.pdf
+      doc_id: PDF-AR-688047-2024
+      title: Loongson Annual Report 2024
+      ticker: "688047"
+      fiscal_year: 2024
+      language: zh-CN
+      doc_group: Loongson_Annual_Report_2024
+      total_pages: 254
+      authority_tier: official
+      chunk_strategy: table_aware
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parts:
+        - { page_range: "001-200", part_index: 1, parsed_path: knowledge/parsed/annual_reports/Loongson_Annual_Report_2024_p001-200 }
+        - { page_range: "201-254", part_index: 2, parsed_path: knowledge/parsed/annual_reports/Loongson_Annual_Report_2024_p201-254 }
+    - file: annual_reports/Loongson_Annual_Report_2025.pdf
+      doc_id: PDF-AR-688047-2025
+      title: Loongson Annual Report 2025
+      ticker: "688047"
+      fiscal_year: 2025
+      language: zh-CN
+      doc_group: Loongson_Annual_Report_2025
+      total_pages: 247
+      authority_tier: official
+      chunk_strategy: table_aware
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parts:
+        - { page_range: "001-200", part_index: 1, parsed_path: knowledge/parsed/annual_reports/Loongson_Annual_Report_2025_p001-200 }
+        - { page_range: "201-247", part_index: 2, parsed_path: knowledge/parsed/annual_reports/Loongson_Annual_Report_2025_p201-247 }
+
+  research_reports:
+    - file: research_reports/20260330_Guohai_Securities_Supernode_OEM_AI_Core_Assets.pdf
+      doc_id: PDF-RR-20260330
+      title: Guohai Securities - Supernode OEM AI Core Assets
+      issuer: Guohai Securities
+      effective_date: "2026-03-30"
+      authority_tier: broker
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/research_reports/20260330_Guohai_Securities_Supernode_OEM_AI_Core_Assets
+    - file: research_reports/20260420_Huibo_Optical_Module_Industry_Deep_Dive.pdf
+      doc_id: PDF-RR-20260420
+      title: Huibo - Optical Module Industry Deep Dive
+      issuer: Huibo Research
+      effective_date: "2026-04-20"
+      authority_tier: broker
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/research_reports/20260420_Huibo_Optical_Module_Industry_Deep_Dive
+    - file: research_reports/20260525_Orient_Securities_Domestic_Computing_Power.pdf
+      doc_id: PDF-RR-20260525
+      title: Orient Securities - Domestic Computing Power
+      issuer: Orient Securities
+      effective_date: "2026-05-25"
+      authority_tier: broker
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/research_reports/20260525_Orient_Securities_Domestic_Computing_Power
+    - file: research_reports/20260531_Soochow_Securities_NeoCloud_AI_Infrastructure.pdf
+      doc_id: PDF-RR-20260531
+      title: Soochow Securities - NeoCloud AI Infrastructure
+      issuer: Soochow Securities
+      effective_date: "2026-05-31"
+      authority_tier: broker
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/research_reports/20260531_Soochow_Securities_NeoCloud_AI_Infrastructure
+    - file: research_reports/20260601_Huibo_Compute_Power_Grid_Coordination.pdf
+      doc_id: PDF-RR-20260601
+      title: Huibo - Compute-Power Grid Coordination
+      issuer: Huibo Research
+      effective_date: "2026-06-01"
+      authority_tier: broker
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/research_reports/20260601_Huibo_Compute_Power_Grid_Coordination
+    - file: research_reports/20260607_Dongxing_Securities_CPO_Silicon_Photonics.pdf
+      doc_id: PDF-RR-20260607
+      title: Dongxing Securities - CPO Silicon Photonics
+      issuer: Dongxing Securities
+      effective_date: "2026-06-07"
+      authority_tier: broker
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/research_reports/20260607_Dongxing_Securities_CPO_Silicon_Photonics
+
+  industry_whitepapers:
+    - file: industry_whitepapers/OpenClaw_AI_Agent_Whitepaper.pdf
+      doc_id: PDF-WP-01
+      title: OpenClaw AI Agent Whitepaper
+      authority_tier: vendor
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/industry_whitepapers/OpenClaw_AI_Agent_Whitepaper
+    - file: industry_whitepapers/China_Digital_Economy_Whitepaper_2024.pdf
+      doc_id: PDF-WP-02
+      title: China Digital Economy Whitepaper 2024
+      effective_date: "2024"
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/industry_whitepapers/China_Digital_Economy_Whitepaper_2024
+    - file: industry_whitepapers/Microsoft_China_Go_Global_AI_Whitepaper_2026.pdf
+      doc_id: PDF-WP-03
+      title: Microsoft China Go-Global AI Whitepaper 2026
+      effective_date: "2026"
+      authority_tier: vendor
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/industry_whitepapers/Microsoft_China_Go_Global_AI_Whitepaper_2026
+    - file: industry_whitepapers/Schneider_AI_Ready_Data_Center.pdf
+      doc_id: PDF-WP-04
+      title: Schneider AI-Ready Data Center
+      authority_tier: vendor
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/industry_whitepapers/Schneider_AI_Ready_Data_Center
+    - file: industry_whitepapers/FNC_DeepSeek_Compute_Network_Whitepaper_2025.pdf
+      doc_id: PDF-WP-05
+      title: FNC DeepSeek Compute Network Whitepaper 2025
+      effective_date: "2025"
+      authority_tier: vendor
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/industry_whitepapers/FNC_DeepSeek_Compute_Network_Whitepaper_2025
+    - file: industry_whitepapers/FNC_Compute_Metro_Network_Whitepaper_2025.pdf
+      doc_id: PDF-WP-06
+      title: FNC Compute Metro Network Whitepaper 2025
+      effective_date: "2025"
+      authority_tier: vendor
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/industry_whitepapers/FNC_Compute_Metro_Network_Whitepaper_2025
+    - file: industry_whitepapers/Zhuyun_Silver_Economy_Business_District_Whitepaper.pdf
+      doc_id: PDF-WP-07
+      title: Zhuyun Silver Economy Business District Whitepaper
+      effective_date: "2025"
+      authority_tier: vendor
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/industry_whitepapers/Zhuyun_Silver_Economy_Business_District_Whitepaper
+
+  policy:
+    - file: policy/Special_Action_Plan.pdf
+      doc_id: PDF-POL-01
+      title: Special Action Plan
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/policy/Special_Action_Plan
+    - file: policy/Industrial_Planning.pdf
+      doc_id: PDF-POL-02
+      title: Industrial Planning
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/policy/Industrial_Planning
+    - file: policy/Industrial_Planning_2.pdf
+      doc_id: PDF-POL-03
+      title: Industrial Planning 2
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/policy/Industrial_Planning_2
+    - file: policy/Artificial_Intelligence_Policy.pdf
+      doc_id: PDF-POL-04
+      title: Artificial Intelligence Policy
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/policy/Artificial_Intelligence_Policy
+    - file: policy/Information_Disclosure_Rules.pdf
+      doc_id: PDF-POL-05
+      title: Information Disclosure Rules
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/policy/Information_Disclosure_Rules
+    - file: policy/Semiconductor_Policy.pdf
+      doc_id: PDF-POL-06
+      title: Semiconductor Policy
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/policy/Semiconductor_Policy
+    - file: policy/Industrial_Internet_Policy.pdf
+      doc_id: PDF-POL-07
+      title: Industrial Internet Policy
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/policy/Industrial_Internet_Policy
+    - file: policy/Robotics_Policy.pdf
+      doc_id: PDF-POL-08
+      title: Robotics Policy
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/policy/Robotics_Policy
+    - file: policy/Capital_Market_Reform.pdf
+      doc_id: PDF-POL-09
+      title: Capital Market Reform
+      authority_tier: official
+      parse_status: ok
+      extract_status: done
+      ingest: true
+      parsed_path: knowledge/parsed/policy/Capital_Market_Reform
