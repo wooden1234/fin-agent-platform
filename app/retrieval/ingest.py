@@ -6,7 +6,8 @@ from llama_index.core.schema import TextNode
 import re
 from app.retrieval.embeddings import get_embed_model
 from typing import List
-from app.retrieval.index import build_index, TABLE_NAME, EMBED_DIM
+from app.retrieval.index import EMBED_DIM, build_index
+from app.retrieval.collections import get_table_name
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 RAW_DIR = ROOT_DIR / "knowledge" / "raw"
@@ -144,8 +145,8 @@ def main():
     print(f"documents → nodes: {len(nodes)}")
 
     from app.retrieval.index import build_index
-    index = build_index(nodes, rebuild=args.rebuild)
-    print(f"index built → table={TABLE_NAME}, dim={EMBED_DIM}")
+    build_index(nodes, category="faq", rebuild=args.rebuild)
+    print(f"index built → table={get_table_name('faq')}, dim={EMBED_DIM}")
 
     for i, node in enumerate(nodes[:1]):  # 只看前 5 片
         print(f"\n--- chunk {i} ---")

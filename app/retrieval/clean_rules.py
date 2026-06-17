@@ -6,6 +6,8 @@ import json
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -321,6 +323,89 @@ class CleanStats:
         return "\n".join(lines)
 
 
+class _HtmlTableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tables: list[list[list[str]]] = []
+        self._current_table: list[list[str]] | None = None
+        self._current_row: list[str] | None = None
+        self._current_cell: list[str] | None = None
+        self._in_cell = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag == "table":
+            self._current_table = []
+            return
+        if tag == "tr" and self._current_table is not None:
+            self._current_row = []
+            return
+        if tag in {"td", "th"} and self._current_row is not None:
+            self._current_cell = []
+            self._in_cell = True
+            return
+        if self._in_cell and tag in {"br", "p", "div"}:
+            self._current_cell.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in {"td", "th"} and self._current_cell is not None:
+            text = _normalize_table_cell("".join(self._current_cell))
+            self._current_row.append(text)
+            self._current_cell = None
+            self._in_cell = False
+            return
+        if tag == "tr" and self._current_table is not None and self._current_row is not None:
+            if any(cell.strip() for cell in self._current_row):
+                self._current_table.append(self._current_row)
+            self._current_row = None
+            return
+        if tag == "table" and self._current_table is not None:
+            if self._current_table:
+                self.tables.append(self._current_table)
+            self._current_table = None
+
+    def handle_data(self, data: str) -> None:
+        if self._in_cell and self._current_cell is not None:
+            self._current_cell.append(data)
+
+
+def _normalize_table_cell(text: str) -> str:
+    text = unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.replace("|", r"\|")
+
+
+def html_table_to_markdown(html_text: str) -> str:
+    if "<table" not in html_text.lower():
+        return html_text.strip()
+
+    parser = _HtmlTableParser()
+    parser.feed(html_text)
+    markdown_tables: list[str] = []
+
+    for table in parser.tables:
+        if not table:
+            continue
+        width = max(len(row) for row in table)
+        if width == 0:
+            continue
+
+        rows = [row + [""] * (width - len(row)) for row in table]
+        header = rows[0]
+        body = rows[1:]
+        lines = [
+            "| " + " | ".join(header) + " |",
+            "| " + " | ".join("---" for _ in range(width)) + " |",
+        ]
+        lines.extend("| " + " | ".join(row) + " |" for row in body)
+        markdown_tables.append("\n".join(lines))
+
+    if markdown_tables:
+        return "\n\n".join(markdown_tables).strip()
+    return html_text.strip()
+
+
 def _format_table_text(block: dict[str, Any], html: str) -> str:
     content = block.get("content", {})
     parts: list[str] = []
@@ -333,7 +418,7 @@ def _format_table_text(block: dict[str, Any], html: str) -> str:
             if text:
                 parts.append(text)
     if html.strip():
-        parts.append(html.strip())
+        parts.append(html_table_to_markdown(html))
     return "\n".join(parts).strip()
 
 

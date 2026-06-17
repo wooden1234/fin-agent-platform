@@ -1,17 +1,23 @@
 import os
 from functools import lru_cache
 from pathlib import Path
+
 from dotenv import load_dotenv
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
 from llama_index.core.schema import TextNode
 from llama_index.vector_stores.postgres import PGVectorStore
-from app.retrieval.embeddings import get_embed_model
 
+from app.retrieval.collections import get_collection_registry, get_table_name
+from app.retrieval.embeddings import get_embed_model
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(ROOT_DIR / ".env", override=False)
-TABLE_NAME = os.getenv("PGVECTOR_TABLE_NAME", "fin_faq_vectors")
+
 EMBED_DIM = int(os.getenv("EMBEDDING_DIM", "1536"))
+
+# 兼容旧代码：FAQ 集合表名
+TABLE_NAME = get_table_name("faq")
+
 
 def _pg_connection_strings() -> tuple[str, str]:
     """同步 / 异步连接串，供 PGVectorStore 使用。"""
@@ -26,13 +32,20 @@ def _pg_connection_strings() -> tuple[str, str]:
     async_url = sync_url.replace("postgresql://", "postgresql+asyncpg://")
     return sync_url, async_url
 
-@lru_cache(maxsize=1)
-def get_vector_store(*, rebuild: bool = False) -> PGVectorStore:
+
+def get_vector_store(
+    table_name: str | None = None,
+    *,
+    category: str = "faq",
+    rebuild: bool = False,
+) -> PGVectorStore:
+    """按 category 或显式 table_name 获取 PGVectorStore。"""
+    resolved = table_name or get_table_name(category)
     sync_url, async_url = _pg_connection_strings()
     vector_store = PGVectorStore.from_params(
         connection_string=sync_url,
         async_connection_string=async_url,
-        table_name=TABLE_NAME,
+        table_name=resolved,
         embed_dim=EMBED_DIM,
         schema_name="public",
         perform_setup=True,
@@ -41,16 +54,20 @@ def get_vector_store(*, rebuild: bool = False) -> PGVectorStore:
         vector_store.clear()
     return vector_store
 
+
 def build_index(
     nodes: list[TextNode],
     *,
+    category: str = "faq",
+    table_name: str | None = None,
     rebuild: bool = False,
     show_progress: bool = True,
 ) -> VectorStoreIndex:
-    """将 ingest 得到的 nodes 写入 pgvector（会调用 Embedding API）。"""
+    """将 ingest 得到的 nodes 写入指定 pgvector 集合。"""
     embed_model = get_embed_model()
     Settings.embed_model = embed_model
-    vector_store = get_vector_store(rebuild=rebuild)
+    resolved = table_name or get_table_name(category)
+    vector_store = get_vector_store(resolved, rebuild=rebuild)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
     return VectorStoreIndex(
         nodes,
@@ -58,25 +75,55 @@ def build_index(
         embed_model=embed_model,
         show_progress=show_progress,
     )
-@lru_cache(maxsize=1)
-def load_index() -> VectorStoreIndex:
+
+
+@lru_cache(maxsize=None)
+def load_index(category: str = "faq") -> VectorStoreIndex:
     """从已有 PG 表加载索引（检索用，不重新 embed）。"""
     embed_model = get_embed_model()
     Settings.embed_model = embed_model
-    vector_store = get_vector_store(rebuild=False)
+    vector_store = get_vector_store(category=category, rebuild=False)
     return VectorStoreIndex.from_vector_store(
         vector_store,
         embed_model=embed_model,
     )
+
+
+def build_indexes_by_category(
+    nodes_by_category: dict[str, list[TextNode]],
+    *,
+    rebuild: bool = True,
+    show_progress: bool = True,
+) -> dict[str, int]:
+    """按 category 分组写入各自 pgvector 集合。"""
+    counts: dict[str, int] = {}
+    for category, nodes in nodes_by_category.items():
+        if not nodes:
+            continue
+        build_index(
+            nodes,
+            category=category,
+            rebuild=rebuild,
+            show_progress=show_progress,
+        )
+        counts[category] = len(nodes)
+    return counts
+
+
 def main() -> None:
     import argparse
+
     from app.retrieval.ingest import run_ingest
+
     parser = argparse.ArgumentParser(description="构建 FAQ 向量索引")
     parser.add_argument("--rebuild", action="store_true", help="清空表后全量重建")
     args = parser.parse_args()
     nodes = run_ingest()
     print(f"nodes: {len(nodes)}")
-    build_index(nodes, rebuild=args.rebuild)
-    print(f"index built → table={TABLE_NAME}, dim={EMBED_DIM}")
+    build_index(nodes, category="faq", rebuild=args.rebuild)
+    print(f"index built → table={get_table_name('faq')}, dim={EMBED_DIM}")
+    print("collections:", get_collection_registry())
+
+
 if __name__ == "__main__":
     main()

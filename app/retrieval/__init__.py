@@ -1,6 +1,31 @@
+from app.retrieval.collections import (
+    all_categories,
+    get_collection_registry,
+    get_table_name,
+    pdf_categories,
+)
 from app.retrieval.retriever import (
     FAQRetriever,
     RetrievalHit,
+    Retriever,
     VectorFAQRetriever,
+    VectorRetriever,
     get_faq_retriever,
+    get_pdf_retriever,
+    get_retriever,
 )
+
+__all__ = [
+    "FAQRetriever",
+    "RetrievalHit",
+    "Retriever",
+    "VectorFAQRetriever",
+    "VectorRetriever",
+    "all_categories",
+    "get_collection_registry",
+    "get_faq_retriever",
+    "get_pdf_retriever",
+    "get_retriever",
+    "get_table_name",
+    "pdf_categories",
+]

@@ -383,7 +383,7 @@ def write_cleaned_md(
     for idx, (part, blocks) in enumerate(parts_blocks):
         if len(job.parts) > 1:
             label = part.page_range or f"part {part.part_index}"
-            sections.append(f"\n---\n\n<!-- part {part.part_index}: {label} -->\n")
+            sections.append(f"<!-- part {part.part_index}: {label} -->\n")
         sections.append(
             blocks_to_markdown(
                 blocks,
@@ -720,11 +720,23 @@ def main() -> None:
         print(f"  {doc_id}: " + " ".join(parts) if parts else f"  {doc_id}: (stats only)")
 
     if args.rebuild_index and chunks:
-        from app.retrieval.index import build_index
+        from collections import defaultdict
 
-        nodes = chunks_to_nodes(chunks)
-        build_index(nodes, rebuild=True)
-        print(f"index rebuilt: {len(nodes)} nodes")
+        from app.retrieval.index import build_indexes_by_category
+
+        by_category: dict[str, list] = defaultdict(list)
+        for chunk in chunks:
+            cat = chunk.metadata.get("category") or chunk.metadata.get("doc_type")
+            if not cat:
+                raise ValueError(f"chunk 缺少 category 元数据: {chunk.metadata}")
+            by_category[cat].append(chunk)
+
+        nodes_by_category = {
+            cat: chunks_to_nodes(cat_chunks) for cat, cat_chunks in by_category.items()
+        }
+        counts = build_indexes_by_category(nodes_by_category, rebuild=True)
+        for cat, n in counts.items():
+            print(f"index rebuilt: category={cat} nodes={n}")
 
 
 if __name__ == "__main__":

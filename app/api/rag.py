@@ -1,22 +1,44 @@
 import asyncio
 from functools import lru_cache
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query
 from app.core.security import get_current_user
 from app.models.user import User
-from app.retrieval import get_faq_retriever
+from app.retrieval import get_retriever
 from app.schemas.rag import RagHitItem, RagSearchResponse
 
+PdfCategory = Literal[
+    "macro_research",
+    "annual_reports",
+    "research_reports",
+    "industry_whitepapers",
+    "policy",
+]
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
-@lru_cache(maxsize=1)
-def _get_retriever():
-    """进程内复用，避免每次请求 load_index。"""
-    return get_faq_retriever(top_k=3, similarity_threshold=None)
 
-@router.post("/search",response_model=RagSearchResponse)
-async def search_rag(query: str = Query(..., description="搜索查询"), current_user: User = Depends(get_current_user)):
-    retriever = _get_retriever()
+@lru_cache(maxsize=16)
+def _get_retriever(categories_key: str):
+    """进程内复用；categories_key 为逗号分隔的 category 或 '__all__'。"""
+    if categories_key == "__all__":
+        return get_retriever(top_k=3, similarity_threshold=None)
+    categories = [c.strip() for c in categories_key.split(",") if c.strip()]
+    return get_retriever(categories=categories, top_k=3, similarity_threshold=None)
+
+
+@router.post("/search", response_model=RagSearchResponse)
+async def search_rag(
+    query: str = Query(..., description="搜索查询"),
+    categories: list[PdfCategory | Literal["faq"]] | None = Query(
+        None,
+        description="限定检索集合；不传则搜索全部（FAQ + 五类 PDF）",
+    ),
+    current_user: User = Depends(get_current_user),
+):
+    key = "__all__" if not categories else ",".join(sorted(set(categories)))
+    retriever = _get_retriever(key)
     hits = await asyncio.to_thread(retriever.search, query, top_k=3)
     hits = [
         RagHitItem(
