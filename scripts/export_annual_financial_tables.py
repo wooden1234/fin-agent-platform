@@ -1,0 +1,138 @@
+"""Export financial table chunks from cleaned annual report JSONL files."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_INPUT = ROOT / "knowledge" / "cleaned" / "annual_reports"
+DEFAULT_JSONL = ROOT / "knowledge" / "cleaned" / "annual_financial_tables.jsonl"
+DEFAULT_CSV = ROOT / "knowledge" / "cleaned" / "annual_financial_tables.csv"
+
+
+TABLE_KIND_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("balance_sheet", ("资产负债表", "资产总计", "负债合计", "所有者权益")),
+    ("income_statement", ("利润表", "营业收入", "营业利润", "净利润", "每股收益")),
+    ("cash_flow_statement", ("现金流量表", "现金流量净额", "经营活动产生的现金流量")),
+    ("major_accounting_data", ("主要会计数据", "主要财务指标", "近三年")),
+    ("equity_changes", ("股东权益变动", "所有者权益变动")),
+    ("segment_revenue", ("分行业", "分产品", "分地区", "主营业务", "营业收入构成")),
+    ("r_and_d", ("研发费用", "研发投入", "研发人员")),
+    ("employee_compensation", ("应付职工薪酬", "职工薪酬", "员工")),
+]
+
+
+def _clean_table_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def classify_table_kind(section: str, text: str) -> str:
+    blob = f"{section} {text}"
+    for kind, keywords in TABLE_KIND_KEYWORDS:
+        if any(keyword in blob for keyword in keywords):
+            return kind
+    return "financial_other"
+
+
+def iter_financial_tables(input_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for chunks_path in sorted(input_dir.glob("*/chunks.jsonl")):
+        with chunks_path.open(encoding="utf-8") as f:
+            for line in f:
+                obj = json.loads(line)
+                meta = obj.get("metadata") or {}
+                if meta.get("block_type") != "table":
+                    continue
+                if meta.get("table_class") != "financial":
+                    continue
+
+                text = obj.get("text", "")
+                section = meta.get("section_path") or meta.get("section") or ""
+                table_kind = classify_table_kind(section, text)
+                rows.append(
+                    {
+                        "doc_id": meta.get("doc_id", ""),
+                        "title": meta.get("title", ""),
+                        "ticker": meta.get("ticker", ""),
+                        "fiscal_year": meta.get("fiscal_year", ""),
+                        "source": meta.get("source", ""),
+                        "page_num": meta.get("page_num", ""),
+                        "chunk_index": meta.get("chunk_index", ""),
+                        "section": section,
+                        "table_kind": table_kind,
+                        "text": text,
+                        "text_flat": _clean_table_text(text),
+                    }
+                )
+    return rows
+
+
+def write_jsonl(rows: list[dict[str, Any]], output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def write_csv(rows: list[dict[str, Any]], output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "doc_id",
+        "title",
+        "ticker",
+        "fiscal_year",
+        "source",
+        "page_num",
+        "chunk_index",
+        "section",
+        "table_kind",
+        "text_flat",
+    ]
+    with output.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({name: row.get(name, "") for name in fieldnames})
+
+
+def print_summary(rows: list[dict[str, Any]]) -> None:
+    by_kind: dict[str, int] = {}
+    by_doc: dict[str, int] = {}
+    for row in rows:
+        by_kind[row["table_kind"]] = by_kind.get(row["table_kind"], 0) + 1
+        by_doc[row["doc_id"]] = by_doc.get(row["doc_id"], 0) + 1
+
+    print(f"financial_table_chunks={len(rows)}")
+    print("by_kind:")
+    for kind, count in sorted(by_kind.items()):
+        print(f"  {kind}: {count}")
+    print("by_doc:")
+    for doc_id, count in sorted(by_doc.items()):
+        print(f"  {doc_id}: {count}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Export financial table chunks from cleaned annual reports."
+    )
+    parser.add_argument("--input-dir", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--jsonl-output", type=Path, default=DEFAULT_JSONL)
+    parser.add_argument("--csv-output", type=Path, default=DEFAULT_CSV)
+    args = parser.parse_args()
+
+    rows = iter_financial_tables(args.input_dir)
+    write_jsonl(rows, args.jsonl_output)
+    write_csv(rows, args.csv_output)
+    print_summary(rows)
+    print(f"jsonl={args.jsonl_output.relative_to(ROOT)}")
+    print(f"csv={args.csv_output.relative_to(ROOT)}")
+
+
+if __name__ == "__main__":
+    main()
