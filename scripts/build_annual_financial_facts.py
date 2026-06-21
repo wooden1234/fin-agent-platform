@@ -132,7 +132,21 @@ def looks_like_header(row: list[str]) -> bool:
     blob = " ".join(row)
     if any(token in blob for token in ("项目", "項目", "科目", "主要", "截至", "年度", "年末")):
         return True
-    if any(token in blob for token in ("本期数", "上年同期数", "期末余额", "期初余额", "期末餘額", "期初餘額")):
+    if any(
+        token in blob
+        for token in (
+            "本期数",
+            "上年同期数",
+            "期末余额",
+            "期初余额",
+            "期末餘額",
+            "期初餘額",
+            "季度",
+            "月份",
+            "三個月",
+            "三个月",
+        )
+    ):
         return True
     if sum(1 for cell in row if parse_period_year(cell) is not None) >= 2:
         return True
