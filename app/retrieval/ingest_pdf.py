@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR_STR = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
+if sys.path and os.path.abspath(sys.path[0]) == _SCRIPT_DIR:
+    sys.path.pop(0)
+if _ROOT_DIR_STR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR_STR)
+
 import argparse
 import importlib.util
 import json
 import logging
 import re
-import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,8 +24,7 @@ from typing import Any, Iterable
 
 import yaml
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(ROOT_DIR))
+ROOT_DIR = Path(_ROOT_DIR_STR)
 
 
 def _import_clean_rules():
@@ -227,6 +235,100 @@ def _split_long_text(text: str, max_chars: int, overlap: int) -> list[str]:
     return pieces
 
 
+def _markdown_row_cells(line: str) -> list[str] | None:
+    line = line.strip()
+    if not line.startswith("|") or "|" not in line[1:]:
+        return None
+    if line.endswith("|"):
+        line = line[:-1]
+    return [cell.strip() for cell in line[1:].split("|")]
+
+
+def _is_markdown_separator(line: str) -> bool:
+    cells = _markdown_row_cells(line)
+    if not cells:
+        return False
+    return all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells)
+
+
+def _table_width(line: str) -> int:
+    cells = _markdown_row_cells(line)
+    return len(cells or [])
+
+
+def _split_markdown_table_text(
+    text: str,
+) -> tuple[list[str], list[str] | None, list[str], bool]:
+    """Return preamble, header lines, body row lines, and whether text had a header."""
+
+    preamble: list[str] = []
+    table_lines: list[str] = []
+    in_table = False
+    for line in text.splitlines():
+        if _markdown_row_cells(line) is not None:
+            in_table = True
+            table_lines.append(line.rstrip())
+        elif not in_table:
+            preamble.append(line.rstrip())
+        elif line.strip():
+            # Keep trailing notes as preamble-like context for all split pieces.
+            preamble.append(line.rstrip())
+
+    if not table_lines:
+        return preamble, None, [], False
+
+    if len(table_lines) >= 2 and _is_markdown_separator(table_lines[1]):
+        return preamble, table_lines[:2], table_lines[2:], True
+    return preamble, None, table_lines, False
+
+
+def _split_financial_table_text(
+    text: str,
+    max_chars: int,
+    inherited_header: list[str] | None = None,
+) -> tuple[list[str], list[str] | None, bool]:
+    """Split a financial markdown table by rows while preserving table headers."""
+
+    preamble, detected_header, body_rows, had_header = _split_markdown_table_text(text)
+    header = detected_header or inherited_header
+    if detected_header:
+        inherited_header = detected_header
+
+    if not body_rows or not header:
+        return _split_long_text(text, max_chars, 0), inherited_header, had_header
+
+    header_width = _table_width(header[0])
+    compatible_rows = [
+        row for row in body_rows if _table_width(row) == header_width or _table_width(row) == 0
+    ]
+    if len(compatible_rows) != len(body_rows) and not detected_header:
+        return _split_long_text(text, max_chars, 0), inherited_header, had_header
+
+    prefix_lines = [line for line in preamble if line.strip()]
+    fixed_lines = prefix_lines + header
+    fixed_text = "\n".join(fixed_lines)
+    pieces: list[str] = []
+    current_rows: list[str] = []
+
+    def flush_rows() -> None:
+        nonlocal current_rows
+        if not current_rows:
+            return
+        pieces.append("\n".join(fixed_lines + current_rows).strip())
+        current_rows = []
+
+    for row in body_rows:
+        candidate = "\n".join(fixed_lines + current_rows + [row]).strip()
+        if current_rows and len(candidate) > max_chars:
+            flush_rows()
+        current_rows.append(row)
+
+    flush_rows()
+    if not pieces and fixed_text:
+        pieces.append(fixed_text)
+    return pieces, inherited_header, had_header
+
+
 def _flush_narrative_buffer(
     buffer: list[str],
     *,
@@ -284,6 +386,7 @@ def _base_chunk_metadata(
     page_num: int,
     block_type: str,
     table_class: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     meta: dict[str, Any] = {
         "format": "pdf",
@@ -318,6 +421,8 @@ def _base_chunk_metadata(
         meta["doc_group"] = job.doc_group
     if table_class:
         meta["table_class"] = table_class
+    if extra:
+        meta.update(extra)
     return meta
 
 
@@ -415,6 +520,7 @@ def chunk_blocks(
     narrative_buffer: list[str] = []
     current_section = ""
     current_page = part.part_start
+    financial_headers: dict[str, list[str]] = {}
 
     def flush_buffer() -> None:
         nonlocal chunk_index, narrative_buffer, current_section, current_page
@@ -463,13 +569,39 @@ def chunk_blocks(
                 prefix_cfg=prefix_cfg,
                 table_class=block.table_class,
             )
-            pieces = _split_long_text(
-                block.text,
-                int(chunk_cfg.get("max_chars", 512)),
-                int(chunk_cfg.get("overlap", 64)),
-            )
-            for piece in pieces:
+            max_chars = int(chunk_cfg.get("max_chars", 512))
+            if block.block_type == "table" and block.table_class == "financial":
+                inherited_header = financial_headers.get(block.section_path)
+                pieces, updated_header, had_header = _split_financial_table_text(
+                    block.text,
+                    max_chars,
+                    inherited_header=inherited_header,
+                )
+                if updated_header:
+                    financial_headers[block.section_path] = updated_header
+                table_extra = {
+                    "table_split_strategy": "financial_row_aware",
+                    "table_header_inherited": bool(inherited_header and not had_header),
+                }
+            else:
+                pieces = _split_long_text(
+                    block.text,
+                    max_chars,
+                    int(chunk_cfg.get("overlap", 64)),
+                )
+                table_extra = {}
+
+            part_count = len(pieces)
+            for part_idx, piece in enumerate(pieces):
                 text = f"{prefix}\n{piece}".strip() if prefix else piece
+                extra = dict(table_extra)
+                if block.block_type == "table":
+                    extra.update(
+                        {
+                            "table_part_index": part_idx,
+                            "table_part_count": part_count,
+                        }
+                    )
                 chunks.append(
                     ChunkRecord(
                         text=text,
@@ -481,6 +613,7 @@ def chunk_blocks(
                             page_num=page_num,
                             block_type=block.block_type,
                             table_class=block.table_class,
+                            extra=extra,
                         ),
                     )
                 )

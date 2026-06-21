@@ -42,7 +42,7 @@ FIELDNAMES = [
 ]
 
 _SEPARATOR_RE = re.compile(r"^-+$")
-_NUMERIC_RE = re.compile(r"^[\(\-+]?\s*[\d,]+(?:\.\d+)?\s*\)?%?$")
+_NUMERIC_RE = re.compile(r"^[\(\-+]?\s*(?:[\d,]+(?:\.\d+)?|\.\d+)\s*\)?%?$")
 _ARABIC_YEAR_RE = re.compile(r"(20\d{2})")
 _ZH_YEAR_RE = re.compile(r"([二〇零一二三四五六七八九]{4})年")
 
@@ -72,6 +72,11 @@ def parse_args() -> argparse.Namespace:
         "--include-raw-table",
         action="store_true",
         help="Keep full raw table text in every output row. CSV can become large.",
+    )
+    parser.add_argument(
+        "--parse-all-tables",
+        action="store_true",
+        help="Parse all exported financial tables, including note_table rows. Default only parses periodic_fact.",
     )
     return parser.parse_args()
 
@@ -125,7 +130,9 @@ def parse_decimal(value: str) -> Decimal | None:
 
 def looks_like_header(row: list[str]) -> bool:
     blob = " ".join(row)
-    if any(token in blob for token in ("项目", "項目", "科目", "主要", "截至", "於", "年度", "年末")):
+    if any(token in blob for token in ("项目", "項目", "科目", "主要", "截至", "年度", "年末")):
+        return True
+    if any(token in blob for token in ("本期数", "上年同期数", "期末余额", "期初余额", "期末餘額", "期初餘額")):
         return True
     if sum(1 for cell in row if parse_period_year(cell) is not None) >= 2:
         return True
@@ -153,7 +160,7 @@ def extract_unit_currency(text: str) -> tuple[str, str]:
     if m:
         unit_blob = m.group(1).strip()
         unit = unit_blob
-        currency_match = re.search(r"币种[:：]\s*([^\s|]+)", unit_blob)
+        currency_match = re.search(r"[币幣]种[:：]\s*([^\s|]+)", unit_blob)
         if currency_match:
             currency = currency_match.group(1)
 
@@ -166,7 +173,7 @@ def extract_unit_currency(text: str) -> tuple[str, str]:
     elif "人民幣萬元" in text or "人民币万元" in text:
         unit = "万元"
         currency = "人民币"
-    elif "币种：人民币" in text or "幣種：人民幣" in text:
+    elif "币种：人民币" in text or "币种： 人民币" in text or "幣種：人民幣" in text:
         currency = currency or "人民币"
 
     if "百万元" in unit or "百萬元" in unit:
@@ -175,7 +182,7 @@ def extract_unit_currency(text: str) -> tuple[str, str]:
         unit = "万元"
     elif "千元" in unit:
         unit = "千元"
-    elif "元" in unit and not unit:
+    elif "元" in unit:
         unit = "元"
 
     return unit, currency
@@ -193,11 +200,30 @@ def parse_period_year(label: str) -> int | None:
 
 
 def classify_period(label: str) -> str:
+    if label.startswith("value_"):
+        return "unknown"
     if any(token in label for token in ("同比", "增减", "變動", "变动", "%")):
         return "change_rate"
-    if any(token in label for token in ("年末", "12 月 31 日", "十二月三十一日", "於")):
+    if any(token in label for token in ("本期数", "上年同期数", "本报告期", "上年同期", "本期发生额", "上期发生额")):
+        return "annual"
+    if "止年度" in label or "年度" in label:
+        return "annual"
+    if any(
+        token in label
+        for token in (
+            "年末",
+            "期末余额",
+            "期初余额",
+            "期末餘額",
+            "期初餘額",
+            "12 月 31 日",
+            "12月31日",
+            "十二月三十一日",
+            "於",
+        )
+    ):
         return "period_end"
-    if "季度" in label or "季" in label:
+    if any(token in label for token in ("季度", "月份", "三個月", "三个月")):
         return "quarter"
     if parse_period_year(label) is not None:
         return "annual"
@@ -331,14 +357,36 @@ def write_csv(rows: list[dict[str, Any]], output: Path, *, include_raw_table: bo
             writer.writerow({name: obj.get(name, "") for name in FIELDNAMES})
 
 
-def print_summary(tables: list[dict[str, Any]], facts: list[dict[str, Any]]) -> None:
+def print_summary(tables: list[dict[str, Any]], parsed_tables: list[dict[str, Any]], facts: list[dict[str, Any]]) -> None:
     by_doc: dict[str, int] = {}
     by_kind: dict[str, int] = {}
+    by_mode: dict[str, int] = {}
+    parsed_by_mode: dict[str, int] = {}
+    skipped_by_mode: dict[str, int] = {}
+    for table in tables:
+        mode = table.get("fact_parse_mode") or "legacy_unspecified"
+        by_mode[mode] = by_mode.get(mode, 0) + 1
+    parsed_ids = {id(table) for table in parsed_tables}
+    for table in tables:
+        mode = table.get("fact_parse_mode") or "legacy_unspecified"
+        target = parsed_by_mode if id(table) in parsed_ids else skipped_by_mode
+        target[mode] = target.get(mode, 0) + 1
     for fact in facts:
         by_doc[fact["doc_id"]] = by_doc.get(fact["doc_id"], 0) + 1
         by_kind[fact["table_kind"]] = by_kind.get(fact["table_kind"], 0) + 1
 
     print(f"tables={len(tables)}")
+    print(f"parsed_tables={len(parsed_tables)}")
+    print(f"skipped_tables={len(tables) - len(parsed_tables)}")
+    print("tables_by_fact_parse_mode:")
+    for key, count in sorted(by_mode.items()):
+        print(f"  {key}: {count}")
+    print("parsed_tables_by_mode:")
+    for key, count in sorted(parsed_by_mode.items()):
+        print(f"  {key}: {count}")
+    print("skipped_tables_by_mode:")
+    for key, count in sorted(skipped_by_mode.items()):
+        print(f"  {key}: {count}")
     print(f"facts={len(facts)}")
     print("facts_by_kind:")
     for key, count in sorted(by_kind.items()):
@@ -348,18 +396,29 @@ def print_summary(tables: list[dict[str, Any]], facts: list[dict[str, Any]]) -> 
         print(f"  {key}: {count}")
 
 
+def format_output_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def main() -> None:
     args = parse_args()
     tables = load_tables(args.input)
     facts: list[dict[str, Any]] = []
+    parsed_tables: list[dict[str, Any]] = []
     for table in tables:
+        if not args.parse_all_tables and table.get("fact_parse_mode") and table.get("fact_parse_mode") != "periodic_fact":
+            continue
+        parsed_tables.append(table)
         facts.extend(parse_table(table))
 
     write_jsonl(facts, args.jsonl_output, include_raw_table=args.include_raw_table)
     write_csv(facts, args.csv_output, include_raw_table=args.include_raw_table)
-    print_summary(tables, facts)
-    print(f"jsonl={args.jsonl_output.relative_to(ROOT)}")
-    print(f"csv={args.csv_output.relative_to(ROOT)}")
+    print_summary(tables, parsed_tables, facts)
+    print(f"jsonl={format_output_path(args.jsonl_output)}")
+    print(f"csv={format_output_path(args.csv_output)}")
 
 
 if __name__ == "__main__":
