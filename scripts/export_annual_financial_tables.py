@@ -57,6 +57,97 @@ PERIODIC_TABLE_KINDS = {
     "cash_flow_statement",
     "major_accounting_data",
 }
+SEGMENT_TABLE_KEYWORDS = (
+    "主营业务分行业",
+    "主营业务分产品",
+    "主营业务分地区",
+    "主营业务分销售模式",
+    "主营业务分行业、分产品、分地区",
+    "分行业情况",
+    "分产品情况",
+    "分地区情况",
+    "分销售模式情况",
+    "分行业",
+    "分產品",
+    "分产品",
+    "分地区",
+    "分部",
+    "主营业务构成",
+    "營業收入構成",
+    "按分部劃分",
+)
+NOTE_TABLE_KEYWORDS = (
+    "其他权益工具投资",
+    "其他權益工具投資",
+    "其他权益工具",
+    "其他權益工具",
+    "涉及政府补助",
+    "政府补助",
+    "政府補助",
+    "资产及负债状况",
+    "資產及負債狀況",
+    "资产负债表项目说明",
+    "資產負債表項目說明",
+    "本公司財務狀況",
+    "公允价值",
+    "公允價值",
+    "於聯營公司的投資",
+    "于联营公司的投资",
+    "联营公司的投资",
+    "聯營公司的投資",
+    "合营公司的投资",
+    "合營公司的投資",
+    "营业收入和营业成本情况",
+    "营业收入和营业成本",
+    "營業收入和營業成本",
+    "境内外会计准则",
+    "境內外會計準則",
+    "募集资金",
+    "募集資金",
+    "应收款项融资",
+    "應收款項融資",
+    "已背书或贴现",
+    "已背書或貼現",
+    "背书或贴现",
+    "背書或貼現",
+    "营业外收入",
+    "營業外收入",
+    "关键技术或性能指标",
+    "關鍵技術或性能指標",
+)
+COMPLEX_TABLE_KEYWORDS = (
+    "所有者权益变动表",
+    "所有者權益變動表",
+    "股东权益变动表",
+    "股東權益變動表",
+    "权益变动表",
+    "權益變動表",
+    "合并所有者权益变动表",
+    "合併所有者權益變動表",
+    "母公司所有者权益变动表",
+    "母公司所有者權益變動表",
+)
+EQUITY_CHANGE_COLUMN_KEYWORDS = (
+    "实收资本",
+    "實收資本",
+    "资本公积",
+    "資本公積",
+    "减: 库存股",
+    "减：库存股",
+    "減：庫存股",
+    "其他综合收益",
+    "其他綜合收益",
+    "专项储备",
+    "專項儲備",
+    "盈余公积",
+    "盈餘公積",
+    "未分配利润",
+    "未分配利潤",
+    "少数股东权益",
+    "少數股東權益",
+    "所有者权益合计",
+    "所有者權益合計",
+)
 
 
 TABLE_KIND_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
@@ -155,6 +246,13 @@ def markdown_rows(text: str) -> list[list[str]]:
     return rows
 
 
+def table_header_signature(text: str) -> str:
+    rows = markdown_rows(text)
+    if not rows:
+        return ""
+    return " | ".join(rows[0])
+
+
 def row_has_periodic_header(row: list[str]) -> bool:
     cells = row[1:] if len(row) > 1 else row
     blob = " ".join(cells)
@@ -165,7 +263,32 @@ def row_has_periodic_header(row: list[str]) -> bool:
     return any(keyword in blob for keyword in PERIODIC_HEADER_KEYWORDS)
 
 
-def classify_fact_parse_mode(table_kind: str, text: str) -> str:
+def is_complex_table(text: str) -> bool:
+    if any(keyword in text for keyword in COMPLEX_TABLE_KEYWORDS):
+        return True
+    if sum(1 for keyword in EQUITY_CHANGE_COLUMN_KEYWORDS if keyword in text) >= 4:
+        return True
+    return False
+
+
+def is_segment_table(text: str) -> bool:
+    return any(keyword in text for keyword in SEGMENT_TABLE_KEYWORDS)
+
+
+def is_note_detail_table(section: str, text: str) -> bool:
+    lines = (text or "").splitlines()
+    header_context = "\n".join(lines[:5])
+    haystack = f"{section}\n{header_context}"
+    return any(keyword in haystack for keyword in NOTE_TABLE_KEYWORDS)
+
+
+def classify_fact_parse_mode(table_kind: str, text: str, section: str = "") -> str:
+    if is_complex_table(text):
+        return "note_table"
+    if is_segment_table(text):
+        return "note_table"
+    if is_note_detail_table(section, text):
+        return "note_table"
     if table_kind not in PERIODIC_TABLE_KINDS:
         return "note_table"
 
@@ -186,6 +309,70 @@ def classify_table_kind(section: str, text: str) -> str:
     return "financial_other"
 
 
+def _to_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _group_mode(rows: list[dict[str, Any]]) -> str:
+    if any(is_complex_table(row.get("text") or "") for row in rows):
+        return "note_table"
+    if any(is_segment_table(row.get("text") or "") for row in rows):
+        return "note_table"
+    if any(is_note_detail_table(row.get("section") or "", row.get("text") or "") for row in rows):
+        return "note_table"
+    modes = {row.get("fact_parse_mode") for row in rows}
+    if "periodic_fact" in modes:
+        return "periodic_fact"
+    if "note_table" in modes:
+        return "note_table"
+    return "unknown"
+
+
+def unify_contiguous_table_modes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    prev_key: tuple[Any, ...] | None = None
+    prev_chunk_index: int | None = None
+
+    for row in rows:
+        chunk_index = _to_int(row.get("chunk_index"))
+        key = (
+            row.get("doc_id"),
+            row.get("section"),
+            row.get("table_header_signature"),
+        )
+        is_contiguous = (
+            current
+            and key == prev_key
+            and chunk_index is not None
+            and prev_chunk_index is not None
+            and chunk_index == prev_chunk_index + 1
+        )
+        if not is_contiguous:
+            if current:
+                grouped.append(current)
+            current = [row]
+        else:
+            current.append(row)
+        prev_key = key
+        prev_chunk_index = chunk_index
+
+    if current:
+        grouped.append(current)
+
+    for group in grouped:
+        if len(group) < 2:
+            continue
+        mode = _group_mode(group)
+        for row in group:
+            row["fact_parse_mode"] = mode
+            row["fact_parse_group_size"] = len(group)
+    return rows
+
+
 def iter_financial_tables(input_dir: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for chunks_path in sorted(input_dir.glob("*/chunks.jsonl")):
@@ -201,7 +388,8 @@ def iter_financial_tables(input_dir: Path) -> list[dict[str, Any]]:
                 text = obj.get("text", "")
                 section = meta.get("section_path") or meta.get("section") or ""
                 table_kind = classify_table_kind(section, text)
-                fact_parse_mode = classify_fact_parse_mode(table_kind, text)
+                fact_parse_mode = classify_fact_parse_mode(table_kind, text, section)
+                header_signature = table_header_signature(text)
                 rows.append(
                     {
                         "doc_id": meta.get("doc_id", ""),
@@ -214,6 +402,8 @@ def iter_financial_tables(input_dir: Path) -> list[dict[str, Any]]:
                         "section": section,
                         "table_kind": table_kind,
                         "fact_parse_mode": fact_parse_mode,
+                        "fact_parse_group_size": 1,
+                        "table_header_signature": header_signature,
                         "table_split_strategy": meta.get("table_split_strategy", ""),
                         "table_header_inherited": meta.get("table_header_inherited", ""),
                         "table_part_index": meta.get("table_part_index", ""),
@@ -222,7 +412,7 @@ def iter_financial_tables(input_dir: Path) -> list[dict[str, Any]]:
                         "text_flat": _clean_table_text(text),
                     }
                 )
-    return rows
+    return unify_contiguous_table_modes(rows)
 
 
 def write_jsonl(rows: list[dict[str, Any]], output: Path) -> None:
@@ -245,6 +435,8 @@ def write_csv(rows: list[dict[str, Any]], output: Path) -> None:
         "section",
         "table_kind",
         "fact_parse_mode",
+        "fact_parse_group_size",
+        "table_header_signature",
         "table_split_strategy",
         "table_header_inherited",
         "table_part_index",

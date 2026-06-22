@@ -282,12 +282,12 @@ def _split_markdown_table_text(
     return preamble, None, table_lines, False
 
 
-def _split_financial_table_text(
+def _split_table_text_by_rows(
     text: str,
     max_chars: int,
     inherited_header: list[str] | None = None,
 ) -> tuple[list[str], list[str] | None, bool]:
-    """Split a financial markdown table by rows while preserving table headers."""
+    """Split a markdown table by rows while preserving table headers."""
 
     preamble, detected_header, body_rows, had_header = _split_markdown_table_text(text)
     header = detected_header or inherited_header
@@ -520,7 +520,7 @@ def chunk_blocks(
     narrative_buffer: list[str] = []
     current_section = ""
     current_page = part.part_start
-    financial_headers: dict[str, list[str]] = {}
+    table_headers: dict[tuple[str, str], list[str]] = {}
 
     def flush_buffer() -> None:
         nonlocal chunk_index, narrative_buffer, current_section, current_page
@@ -557,10 +557,6 @@ def chunk_blocks(
         flush_buffer()
 
         if block.block_type in ATOMIC_TYPES:
-            if strategy == "table_aware" and block.block_type == "table" and block.table_class != "financial":
-                narrative_buffer.append(block.text)
-                continue
-
             prefix = _chunk_prefix(
                 block.block_type,
                 title=job.title,
@@ -570,17 +566,22 @@ def chunk_blocks(
                 table_class=block.table_class,
             )
             max_chars = int(chunk_cfg.get("max_chars", 512))
-            if block.block_type == "table" and block.table_class == "financial":
-                inherited_header = financial_headers.get(block.section_path)
-                pieces, updated_header, had_header = _split_financial_table_text(
+            if block.block_type == "table":
+                header_key = (block.section_path or "", block.table_class or "")
+                inherited_header = table_headers.get(header_key)
+                pieces, updated_header, had_header = _split_table_text_by_rows(
                     block.text,
                     max_chars,
                     inherited_header=inherited_header,
                 )
                 if updated_header:
-                    financial_headers[block.section_path] = updated_header
+                    table_headers[header_key] = updated_header
                 table_extra = {
-                    "table_split_strategy": "financial_row_aware",
+                    "table_split_strategy": (
+                        "financial_row_aware"
+                        if block.table_class == "financial"
+                        else "table_row_aware"
+                    ),
                     "table_header_inherited": bool(inherited_header and not had_header),
                 }
             else:

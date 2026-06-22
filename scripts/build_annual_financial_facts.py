@@ -60,6 +60,44 @@ _ZH_DIGITS = {
     "九": "9",
 }
 
+HEADER_FIRST_CELLS = {
+    "项目",
+    "項目",
+    "科目",
+    "主要会计数据",
+    "主要會計數據",
+    "主要财务指标",
+    "主要財務指標",
+    "非经常性损益项目",
+    "非經常性損益項目",
+}
+
+HEADER_PERIOD_KEYWORDS = (
+    "本期数",
+    "上年同期数",
+    "本报告期",
+    "上年同期",
+    "本期发生额",
+    "上期发生额",
+    "本期發生額",
+    "上期發生額",
+    "期末余额",
+    "期初余额",
+    "期末餘額",
+    "期初餘額",
+    "季度",
+    "月份",
+    "三個月",
+    "三个月",
+    "年度",
+    "年末",
+    "截至",
+    "止年度",
+    "十二月三十一日",
+    "12月31日",
+    "12 月 31 日",
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -77,6 +115,11 @@ def parse_args() -> argparse.Namespace:
         "--parse-all-tables",
         action="store_true",
         help="Parse all exported financial tables, including note_table rows. Default only parses periodic_fact.",
+    )
+    parser.add_argument(
+        "--include-low-confidence",
+        action="store_true",
+        help="Keep empty/value_/unknown period labels for debugging. Default skips them.",
     )
     return parser.parse_args()
 
@@ -129,28 +172,54 @@ def parse_decimal(value: str) -> Decimal | None:
 
 
 def looks_like_header(row: list[str]) -> bool:
-    blob = " ".join(row)
-    if any(token in blob for token in ("项目", "項目", "科目", "主要", "截至", "年度", "年末")):
+    first_cell = row[0].strip() if row else ""
+    value_cells = row[1:] if len(row) > 1 else row
+    value_blob = " ".join(value_cells)
+    full_blob = " ".join(row)
+
+    if first_cell in HEADER_FIRST_CELLS:
         return True
-    if any(
-        token in blob
-        for token in (
-            "本期数",
-            "上年同期数",
-            "期末余额",
-            "期初余额",
-            "期末餘額",
-            "期初餘額",
-            "季度",
-            "月份",
-            "三個月",
-            "三个月",
-        )
-    ):
+    if any(token in value_blob for token in HEADER_PERIOD_KEYWORDS):
         return True
-    if sum(1 for cell in row if parse_period_year(cell) is not None) >= 2:
+    if sum(1 for cell in value_cells if parse_period_year(cell) is not None) >= 1:
+        return True
+    if first_cell == "" and any(token in full_blob for token in HEADER_PERIOD_KEYWORDS):
         return True
     return False
+
+
+def is_note_header(label: str) -> bool:
+    return label.strip() in {"附注", "附註", "注释", "註釋", "附注(如适用)", "附註(如適用)"}
+
+
+def is_period_header_cell(label: str) -> bool:
+    label = label.strip()
+    if not label:
+        return False
+    return classify_period(label) != "unknown" or parse_period_year(label) is not None
+
+
+def update_headers(current: list[str] | None, row: list[str]) -> list[str]:
+    if current is None:
+        if parse_period_year(row[0]) is not None and sum(
+            1 for cell in row if parse_period_year(cell) is not None
+        ) >= 2:
+            return [""] + row
+        return row
+
+    width = max(len(current), len(row))
+    merged = value_headers(current, width)
+    period_cells = [cell for cell in row if is_period_header_cell(cell)]
+    if not period_cells:
+        return row
+
+    note_cols = {idx for idx, label in enumerate(merged) if is_note_header(label)}
+    target_cols = [idx for idx in range(1, width) if idx not in note_cols]
+    if len(period_cells) <= len(target_cols):
+        for idx, label in zip(target_cols, period_cells):
+            merged[idx] = label
+        return merged
+    return row
 
 
 def should_skip_metric(metric: str) -> bool:
@@ -218,7 +287,19 @@ def classify_period(label: str) -> str:
         return "unknown"
     if any(token in label for token in ("同比", "增减", "變動", "变动", "%")):
         return "change_rate"
-    if any(token in label for token in ("本期数", "上年同期数", "本报告期", "上年同期", "本期发生额", "上期发生额")):
+    if any(
+        token in label
+        for token in (
+            "本期数",
+            "上年同期数",
+            "本报告期",
+            "上年同期",
+            "本期发生额",
+            "上期发生额",
+            "本期發生額",
+            "上期發生額",
+        )
+    ):
         return "annual"
     if "止年度" in label or "年度" in label:
         return "annual"
@@ -273,7 +354,14 @@ def value_headers(headers: list[str], width: int) -> list[str]:
     return headers + [f"value_{i}" for i in range(len(headers), width)]
 
 
-def row_to_facts(table: dict[str, Any], row: list[str], headers: list[str], row_index: int) -> list[dict[str, Any]]:
+def row_to_facts(
+    table: dict[str, Any],
+    row: list[str],
+    headers: list[str],
+    row_index: int,
+    *,
+    include_low_confidence: bool = False,
+) -> list[dict[str, Any]]:
     width = max(len(row), len(headers))
     cells = row + [""] * (width - len(row))
     hdrs = value_headers(headers, width)
@@ -288,9 +376,14 @@ def row_to_facts(table: dict[str, Any], row: list[str], headers: list[str], row_
         if value is None:
             continue
         period_label = hdrs[col_idx].strip() if col_idx < len(hdrs) else f"value_{col_idx}"
-        if period_label in {"附注", "附註", "注释", "註釋"}:
+        if is_note_header(period_label):
             continue
         period_type = classify_period(period_label)
+        if (
+            not include_low_confidence
+            and (not period_label or period_label.startswith("value_") or period_type == "unknown")
+        ):
+            continue
         fact_unit = "%" if period_type == "change_rate" or raw_value.strip().endswith("%") else unit
         period_year = infer_period_year(period_label, table.get("fiscal_year"))
         facts.append(
@@ -322,7 +415,7 @@ def row_to_facts(table: dict[str, Any], row: list[str], headers: list[str], row_
     return facts
 
 
-def parse_table(table: dict[str, Any]) -> list[dict[str, Any]]:
+def parse_table(table: dict[str, Any], *, include_low_confidence: bool = False) -> list[dict[str, Any]]:
     rows = extract_markdown_rows(table.get("text") or "")
     if not rows:
         return []
@@ -331,16 +424,19 @@ def parse_table(table: dict[str, Any]) -> list[dict[str, Any]]:
     headers: list[str] | None = None
     for row_index, row in enumerate(rows):
         if looks_like_header(row):
-            if parse_period_year(row[0]) is not None and sum(
-                1 for cell in row if parse_period_year(cell) is not None
-            ) >= 2:
-                headers = [""] + row
-            else:
-                headers = row
+            headers = update_headers(headers, row)
             continue
         if headers is None:
             headers = ["metric"] + [f"value_{i}" for i in range(1, len(row))]
-        facts.extend(row_to_facts(table, row, headers, row_index))
+        facts.extend(
+            row_to_facts(
+                table,
+                row,
+                headers,
+                row_index,
+                include_low_confidence=include_low_confidence,
+            )
+        )
     return facts
 
 
@@ -426,7 +522,7 @@ def main() -> None:
         if not args.parse_all_tables and table.get("fact_parse_mode") and table.get("fact_parse_mode") != "periodic_fact":
             continue
         parsed_tables.append(table)
-        facts.extend(parse_table(table))
+        facts.extend(parse_table(table, include_low_confidence=args.include_low_confidence))
 
     write_jsonl(facts, args.jsonl_output, include_raw_table=args.include_raw_table)
     write_csv(facts, args.csv_output, include_raw_table=args.include_raw_table)
