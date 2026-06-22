@@ -199,6 +199,14 @@ def is_period_header_cell(label: str) -> bool:
     return classify_period(label) != "unknown" or parse_period_year(label) is not None
 
 
+def count_specific_period_headers(headers: list[str], target_cols: list[int]) -> int:
+    return sum(
+        1
+        for idx in target_cols
+        if idx < len(headers) and parse_period_year(headers[idx]) is not None
+    )
+
+
 def update_headers(current: list[str] | None, row: list[str]) -> list[str]:
     if current is None:
         if parse_period_year(row[0]) is not None and sum(
@@ -215,6 +223,8 @@ def update_headers(current: list[str] | None, row: list[str]) -> list[str]:
 
     note_cols = {idx for idx, label in enumerate(merged) if is_note_header(label)}
     target_cols = [idx for idx in range(1, width) if idx not in note_cols]
+    if len(period_cells) < len(target_cols) and count_specific_period_headers(merged, target_cols) >= len(target_cols):
+        return merged
     if len(period_cells) <= len(target_cols):
         for idx, label in zip(target_cols, period_cells):
             merged[idx] = label
@@ -415,13 +425,18 @@ def row_to_facts(
     return facts
 
 
-def parse_table(table: dict[str, Any], *, include_low_confidence: bool = False) -> list[dict[str, Any]]:
+def parse_table(
+    table: dict[str, Any],
+    *,
+    include_low_confidence: bool = False,
+    initial_headers: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str] | None]:
     rows = extract_markdown_rows(table.get("text") or "")
     if not rows:
-        return []
+        return [], initial_headers
 
     facts: list[dict[str, Any]] = []
-    headers: list[str] | None = None
+    headers: list[str] | None = list(initial_headers) if initial_headers else None
     for row_index, row in enumerate(rows):
         if looks_like_header(row):
             headers = update_headers(headers, row)
@@ -437,7 +452,7 @@ def parse_table(table: dict[str, Any], *, include_low_confidence: bool = False) 
                 include_low_confidence=include_low_confidence,
             )
         )
-    return facts
+    return facts, headers
 
 
 def load_tables(path: Path) -> list[dict[str, Any]]:
@@ -518,11 +533,24 @@ def main() -> None:
     tables = load_tables(args.input)
     facts: list[dict[str, Any]] = []
     parsed_tables: list[dict[str, Any]] = []
+    header_cache: dict[tuple[Any, Any, Any], list[str]] = {}
     for table in tables:
         if not args.parse_all_tables and table.get("fact_parse_mode") and table.get("fact_parse_mode") != "periodic_fact":
             continue
         parsed_tables.append(table)
-        facts.extend(parse_table(table, include_low_confidence=args.include_low_confidence))
+        header_key = (
+            table.get("doc_id"),
+            table.get("section"),
+            table.get("table_header_signature"),
+        )
+        table_facts, final_headers = parse_table(
+            table,
+            include_low_confidence=args.include_low_confidence,
+            initial_headers=header_cache.get(header_key),
+        )
+        facts.extend(table_facts)
+        if final_headers:
+            header_cache[header_key] = final_headers
 
     write_jsonl(facts, args.jsonl_output, include_raw_table=args.include_raw_table)
     write_csv(facts, args.csv_output, include_raw_table=args.include_raw_table)
