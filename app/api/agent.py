@@ -32,7 +32,7 @@ async def agent_query(
     thread_config = make_thread_config(thread_id)
     graph = get_graph()
     input_payload = {"messages": [HumanMessage(content=query)]}
-    STREAMABLE_NODES = frozenset({"faq_agent"})
+    STREAMABLE_NODES = frozenset({"faq_agent", "pdf_agent"})
     async def process_stream():
         try:
             async for msg, metadata in graph.astream(

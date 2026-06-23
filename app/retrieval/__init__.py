@@ -6,6 +6,7 @@ from app.retrieval.collections import (
 )
 from app.retrieval.retriever import (
     FAQRetriever,
+    HybridRetriever,
     RetrievalHit,
     Retriever,
     VectorFAQRetriever,
@@ -17,6 +18,7 @@ from app.retrieval.retriever import (
 
 __all__ = [
     "FAQRetriever",
+    "HybridRetriever",
     "RetrievalHit",
     "Retriever",
     "VectorFAQRetriever",

@@ -10,6 +10,7 @@ def test_graph_compiles_and_has_expected_nodes():
     nodes = set(graph.get_graph().nodes.keys())
     assert "supervisor" in nodes
     assert "faq_agent" in nodes
+    assert "pdf_agent" in nodes
     assert "__start__" in nodes
     assert "__end__" in nodes
 
@@ -22,4 +23,5 @@ def test_conditional_edges_from_supervisor():
     supervisor_edges = [e for e in edges if e[0] == "supervisor"]
     targets = {e[1] for e in supervisor_edges}
     assert "faq_agent" in targets
+    assert "pdf_agent" in targets
     assert END in targets or "__end__" in targets

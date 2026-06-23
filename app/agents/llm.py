@@ -45,3 +45,8 @@ def get_faq_llm() -> BaseChatModel:
         temperature=settings.AGENT_FAQ_TEMPERATURE,
         max_retries=2,
     )
+
+
+def get_pdf_llm() -> BaseChatModel:
+    """PDF 文档回答用 LLM：复用问答生成模型配置。"""
+    return get_faq_llm()

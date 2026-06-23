@@ -14,8 +14,8 @@ from app.core.logger import get_logger
 
 logger = get_logger(service="supervisor")
 
-# W3 主图仅编译 faq 节点；W4 扩展 account / general
-RouteTarget = Literal["faq_agent", "__end__"]
+# 主图编译 faq / pdf 节点；account / general 暂未接入执行链路
+RouteTarget = Literal["faq_agent", "pdf_agent", "__end__"]
 
 
 async def analyze_and_route_query(
@@ -56,15 +56,17 @@ async def analyze_and_route_query(
 def route_query(state: FinAgentState) -> RouteTarget:
     """条件边：根据 Supervisor 的 route 选择下一节点。
 
-    W3：仅 ``faq`` → ``faq_agent``，其余 → ``__end__``（W4 扩展）。
+    ``faq`` → ``faq_agent``；``pdf`` → ``pdf_agent``；其余 → ``__end__``。
     """
     route = state.get("route", "faq")
     logger.info("route_query: route={}", route)
 
     if route == "faq":
         return "faq_agent"
+    if route == "pdf":
+        return "pdf_agent"
     if route in ("account", "general"):
-        logger.info("W3 未实现 {} 链路，直接结束", route)
+        logger.info("未实现 {} 链路，直接结束", route)
         return "__end__"
 
     logger.warning("未知 route={}，结束图执行", route)

@@ -13,6 +13,10 @@ class TestRouteQuery:
         state: FinAgentState = {"messages": [], "route": "faq"}
         assert route_query(state) == "faq_agent"
 
+    def test_pdf_route(self):
+        state: FinAgentState = {"messages": [], "route": "pdf"}
+        assert route_query(state) == "pdf_agent"
+
     def test_account_route_ends_in_w3(self):
         state: FinAgentState = {"messages": [], "route": "account"}
         assert route_query(state) == "__end__"
@@ -47,5 +51,5 @@ async def test_analyze_and_route_general_query():
         "messages": [HumanMessage(content="今天北京天气怎么样？")],
     }
     update = await analyze_and_route_query(state, {})
-    assert update["route"] in ("general", "faq")
+    assert update["route"] in ("general", "faq", "pdf")
     assert update["logic"]

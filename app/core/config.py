@@ -28,10 +28,11 @@ class Settings(BaseSettings):
     # LLM（W3+ Supervisor / Agent）
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
-    DEEPSEEK_MODEL: str = "deepseek-chat"
+    DEEPSEEK_MODEL: str = "deepseek-v4-flash"
     AGENT_ROUTER_TEMPERATURE: float = 0.0
     AGENT_FAQ_TEMPERATURE: float = 0.3
     FAQ_MIN_RELEVANCE_SCORE: float = 0.35
+    PDF_MIN_RELEVANCE_SCORE: float = 0.35
 
     # LangGraph Checkpoint（W3 Day 5）：postgres | memory
     AGENT_CHECKPOINT_BACKEND: str = "postgres"

@@ -9,7 +9,7 @@ from langgraph.graph import add_messages
 from pydantic import BaseModel, Field
 
 # ---------- 与前端 / SSE 对齐 ----------
-AgentRoute = Literal["faq", "account", "general"]
+AgentRoute = Literal["faq", "pdf", "account", "general"]
 # 风险等级：L1 普通 FAQ；L2 账户查询；L3 投诉敏感；L4 挂失大额等需人工
 RiskLevel = Literal["L1", "L2", "L3", "L4"]
 

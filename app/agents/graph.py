@@ -1,4 +1,4 @@
-"""主图编译：START → Supervisor → [faq_agent | END] → END（Week 3 Day 4+5）。"""
+"""主图编译：START → Supervisor → [faq_agent | pdf_agent | END] → END。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents.states import FinAgentInput, FinAgentState
 from app.agents.subgraphs.faq import faq_agent
+from app.agents.subgraphs.pdf import pdf_agent
 from app.agents.supervisor import analyze_and_route_query, route_query
 
 _compiled_graph = None
@@ -19,6 +20,7 @@ def build_graph() -> StateGraph:
 
     builder.add_node("supervisor", analyze_and_route_query)
     builder.add_node("faq_agent", faq_agent)
+    builder.add_node("pdf_agent", pdf_agent)
 
     builder.add_edge(START, "supervisor")
     builder.add_conditional_edges(
@@ -26,10 +28,12 @@ def build_graph() -> StateGraph:
         route_query,
         {
             "faq_agent": "faq_agent",
+            "pdf_agent": "pdf_agent",
             "__end__": END,
         },
     )
     builder.add_edge("faq_agent", END)
+    builder.add_edge("pdf_agent", END)
 
     return builder
 
