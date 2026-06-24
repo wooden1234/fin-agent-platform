@@ -13,7 +13,7 @@ logger = get_logger(service="final_answer")
 
 async def final_answer_node(
     state: FinAgentState,
-    config: RunnableConfig | None = None,
+    config: RunnableConfig = None,
 ) -> dict:
     """统一格式化最终回答，附加引用来源"""
 
@@ -32,11 +32,11 @@ async def final_answer_node(
             "messages": [AIMessage(content=answer)],
         }
 
-    # 获取 summary（来自 summarize 节点）
-    answer = state.get("summary", "")
+    route = state.get("route", "general")
+    answer = ""
 
-    # 若 summary 为空，从 messages 中获取最后一条 AI 消息兜底
-    if not answer:
+    if route == "general":
+        # general 答案已由 general_agent 写入 messages，直接取最后一条 AIMessage
         for msg in reversed(list(state.get("messages") or [])):
             if isinstance(msg, AIMessage):
                 answer = (
@@ -45,19 +45,43 @@ async def final_answer_node(
                     else str(msg.content)
                 )
                 break
+    else:
+        # plan 答案来自 summarize → summary
+        answer = state.get("summary", "")
+        if not answer:
+            for msg in reversed(list(state.get("messages") or [])):
+                if isinstance(msg, AIMessage):
+                    answer = (
+                        msg.content
+                        if isinstance(msg.content, str)
+                        else str(msg.content)
+                    )
+                    break
 
     if not answer:
         answer = "抱歉，我暂时无法回答您的问题，请稍后重试。"
 
     citations = list(state.get("citations") or [])
 
+    # 去重：并行分支可能返回相同引用
+    seen = set()
+    deduped: list[dict] = []
+    for c in citations:
+        key = (c.get("source", ""), c.get("page"))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(c)
+
     logger.info(
-        "final_answer len=%d citations=%d",
+        "final_answer route={} len={} citations={} deduped={}",
+        route,
         len(answer),
         len(citations),
+        len(deduped),
     )
 
     return {
         "messages": [AIMessage(content=answer)],
-        "citations": citations,
+        "citations": deduped,
+        "summary": "",
     }

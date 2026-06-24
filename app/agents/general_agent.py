@@ -1,4 +1,4 @@
-"""General 子图节点：纯 LLM 对话（闲聊 / 回溯 / 兜底）。"""
+"""General Agent 节点：纯 LLM 对话（闲聊 / 回溯 / 兜底）。"""
 
 from __future__ import annotations
 

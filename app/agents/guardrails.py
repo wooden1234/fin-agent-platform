@@ -73,7 +73,7 @@ def _check_harmful(query: str) -> tuple[bool, str]:
 
 async def guardrails_node(
     state: FinAgentState,
-    config: RunnableConfig | None = None,
+    config: RunnableConfig = None,
 ) -> dict:
     """纯规则护栏校验，前置在 Supervisor 之前"""
     query = _latest_user_query(list(state.get("messages") or []))

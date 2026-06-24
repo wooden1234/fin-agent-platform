@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import AsyncExitStack
 from typing import Literal
 
@@ -12,6 +13,9 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.core.config import settings
 from app.core.logger import get_logger
+
+# 允许 msgpack 反序列化 SubTask 等 Pydantic 模型
+os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "false")
 
 logger = get_logger(service="checkpoint")
 

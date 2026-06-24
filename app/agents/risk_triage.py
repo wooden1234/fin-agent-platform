@@ -40,7 +40,7 @@ RISK_TRIAGE_PROMPT = """你是金融智能客服平台的风险评估 Agent。
 
 async def risk_triage_node(
     state: FinAgentState,
-    config: RunnableConfig | None = None,
+    config: RunnableConfig = None,
 ) -> dict:
     """独立的风险评估与处置节点"""
     history = list(state.get("messages") or [])

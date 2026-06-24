@@ -24,7 +24,7 @@ def _format_task_results(task_results: list[TaskResult]) -> str:
 
 async def summarize_node(
     state: FinAgentState,
-    config: RunnableConfig | None = None,
+    config: RunnableConfig = None,
 ) -> dict:
     """融合所有并行检索结果，生成统一回答"""
     task_results: list[TaskResult] = state.get("task_results", [])

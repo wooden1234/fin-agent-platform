@@ -29,23 +29,13 @@ def _latest_user_query_from_state(state: FinAgentState) -> str:
 def _fanout_from_planner(state: FinAgentState) -> list[Send]:
     """Planner 后的并行分发边。
 
-    - 有子任务 → 每个 SubTask 一个 Send，LangGraph 自动并行
-    - 无子任务 → 回退到 faq/pdf 二选一
+    - 每个 SubTask 一个 Send，LangGraph 自动并行
+    - 空列表仅异常时出现，回退到 faq(默认)
     """
     sub_tasks: list[SubTask] = list(state.get("sub_tasks") or [])
 
+    # 异常兜底：LLM 解析失败，回退到 faq
     if not sub_tasks:
-        route = state.get("route", "faq")
-        if route == "pdf":
-            return [
-                Send(
-                    "pdf_agent",
-                    {
-                        "sub_question": _latest_user_query_from_state(state),
-                        "sub_task_id": "fallback",
-                    },
-                )
-            ]
         return [
             Send(
                 "faq_agent",

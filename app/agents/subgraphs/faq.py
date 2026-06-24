@@ -41,7 +41,7 @@ def _hits_to_citations(hits: list[RetrievalHit]) -> list[Citation]:
 
 async def faq_agent(
     state: FinAgentState,
-    config: RunnableConfig | None = None,
+    config: RunnableConfig = None,
 ) -> dict:
     # 🔑 fanout 传入的子问题优先
     sub_question = state.get("sub_question", "")

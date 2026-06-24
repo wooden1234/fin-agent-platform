@@ -26,7 +26,7 @@ def _latest_user_query(messages: list) -> str:
 
 async def planner_node(
     state: FinAgentState,
-    config: RunnableConfig | None = None,
+    config: RunnableConfig = None,
 ) -> dict:
     """将用户问题分解为独立子任务列表。
 
@@ -58,7 +58,7 @@ async def planner_node(
                 task.id = uuid.uuid4().hex[:8]
 
         logger.info(
-            "planner tasks=%d types=%s",
+            "planner tasks={} types={}",
             len(output.tasks),
             [t.type for t in output.tasks],
         )

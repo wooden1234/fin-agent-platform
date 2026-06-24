@@ -56,14 +56,14 @@ def _count_turns(messages: list[AnyMessage]) -> int:
 
 async def compress_context(
     state: FinAgentState,
-    config: RunnableConfig | None = None,
+    config: RunnableConfig = None,
 ) -> dict:
     """上下文压缩：最近 K 轮完整保留，更早的压缩为一行摘要。"""
     history = list(state.get("messages") or [])
     turn_count = _count_turns(history)
 
     if turn_count <= COMPRESS_THRESHOLD_TURNS:
-        logger.info("compress skipped, turns=%d <= threshold", turn_count)
+        logger.info("compress skipped, turns={} <= threshold", turn_count)
         return {}
 
     user_indices = [

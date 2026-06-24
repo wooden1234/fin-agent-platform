@@ -11,7 +11,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.states import FinAgentInput, FinAgentState
-from app.agents.subgraphs.general import general_agent
+from app.agents.general_agent import general_agent
 from app.agents.subgraphs.plan_agent import plan_agent
 from app.agents.supervisor import analyze_and_route_query, route_query
 from app.agents.guardrails import guardrails_edge, guardrails_node
