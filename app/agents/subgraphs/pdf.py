@@ -84,9 +84,10 @@ async def pdf_agent(
     context = _build_context(hits)
     citations = _hits_to_citations(hits)
 
+    history = list(state.get("messages") or [])
     llm_messages = [
         SystemMessage(content=PDF_SYSTEM_PROMPT.format(context=context)),
-        HumanMessage(content=query),
+        *history,
     ]
     try:
         llm = get_pdf_llm()

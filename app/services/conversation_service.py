@@ -10,11 +10,20 @@ logger = get_logger(service="conversation")
 class ConversationService:
     @staticmethod
     def get_conversation_title(message: str, max_length: int = 20) -> str:
-        """从消息中提取会话标题"""
-        title = " ".join(message.split())
+        """从消息中提取第一句作为会话标题"""
+        # 按常见断句符号取第一句
+        for sep in ("。", "？", "！", "\n", "；"):
+            idx = message.find(sep)
+            if idx >= 0:
+                title = message[:idx].strip()
+                break
+        else:
+            title = message.strip()
+        # 压缩多余空格
+        title = " ".join(title.split())
         if len(title) > max_length:
             title = title[:max_length] + "..."
-        return title
+        return title if title else "新会话"
 
     @staticmethod
     async def create_conversation(user_id: int) -> int:
@@ -92,10 +101,10 @@ class ConversationService:
         """获取用户的所有会话"""
         try:
             async with AsyncSessionLocal() as db:
-                # 查询用户的所有会话，排除标题为"新会话"的对话
+                # 查询用户的所有会话，排除未使用的新会话
                 stmt = select(Conversation).where(
                     Conversation.user_id == user_id,
-                    Conversation.title != "新会话"  # 添加这个条件
+                    Conversation.title != "新会话",
                 ).order_by(Conversation.created_at.desc())
                 
                 result = await db.execute(stmt)

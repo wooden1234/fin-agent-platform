@@ -9,6 +9,7 @@ from app.agents.graph import get_graph
 from app.core.logger import get_logger
 from app.core.security import get_current_user
 from app.models.user import User
+from app.services.conversation_service import ConversationService
 
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -32,8 +33,9 @@ async def agent_query(
     thread_config = make_thread_config(thread_id)
     graph = get_graph()
     input_payload = {"messages": [HumanMessage(content=query)]}
-    STREAMABLE_NODES = frozenset({"faq_agent", "pdf_agent"})
+    STREAMABLE_NODES = frozenset({"faq_agent", "pdf_agent", "general_agent"})
     async def process_stream():
+        assistant_full_response = ""
         try:
             async for msg, metadata in graph.astream(
                 input_payload,
@@ -50,12 +52,29 @@ async def agent_query(
                 if not isinstance(msg, AIMessage):
                     continue
                 content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                assistant_full_response += content
                 yield _sse({"type": "token", "content": content})
             
             state = await graph.aget_state(thread_config)
             values = (state.values if state else {}) or {}
             citations = values.get("citations") or []
             yield _sse({"type": "done", "citations": citations})
+
+            # 持久化消息到数据库
+            if conversation_id and assistant_full_response:
+                try:
+                    await ConversationService.save_message(
+                        user_id=current_user.id,
+                        conversation_id=int(conversation_id),
+                        messages=[{"role": "user", "content": query}],
+                        response=assistant_full_response,
+                    )
+                    logger.info(
+                        "conversation saved: user={}, conv={}",
+                        current_user.id, conversation_id,
+                    )
+                except Exception as save_err:
+                    logger.error("Failed to save conversation: {}", save_err)
 
         except Exception as e:
             logger.exception("agent_query stream error")
