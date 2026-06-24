@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   MessageSquarePlus,
   Trash2,
@@ -35,6 +35,7 @@ export function Sidebar({
   const {
     conversations,
     activeConversationId,
+    isGenerating,
     setConversations,
     setActiveConversationId,
     setMessages,
@@ -42,6 +43,7 @@ export function Sidebar({
   } = useChatStore()
   const [loadingList, setLoadingList] = useState(false)
   const [loadingMessages, setLoadingMessages] = useState(false)
+  const prevGenerating = useRef(isGenerating)
 
   const refreshConversations = async () => {
     setLoadingList(true)
@@ -59,10 +61,18 @@ export function Sidebar({
     void refreshConversations()
   }, [])
 
+  // 消息生成完成后自动刷新会话列表（新会话标题此时已更新）
+  useEffect(() => {
+    if (prevGenerating.current && !isGenerating) {
+      void refreshConversations()
+    }
+    prevGenerating.current = isGenerating
+  }, [isGenerating])
+
   const handleNewConversation = async () => {
     try {
       const created = await createConversation()
-      const conversationId = created.conversation_id ?? String(created.id)
+      const conversationId = String(created.conversation_id ?? created.id)
       setActiveConversationId(conversationId)
       setMessages([])
       await refreshConversations()

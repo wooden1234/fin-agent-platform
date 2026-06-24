@@ -80,7 +80,7 @@ async def agent_query(
             logger.exception("agent_query stream error")
             yield _sse({"type": "error", "message": str(e)})
     response = StreamingResponse(process_stream(), media_type="text/event-stream")
-    response.headers["X-Thread-ID"] = thread_id
+    response.headers["X-Conversation-ID"] = thread_id
     response.headers["Cache-Control"] = "no-cache"
     return response
 
