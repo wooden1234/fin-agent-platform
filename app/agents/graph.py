@@ -1,67 +1,77 @@
-"""主图编译：START → Supervisor → [general_agent | plan_agent → [faq_agent | pdf_agent]] → END。"""
+"""主图编译：START → guardrails → context_compressor → supervisor → risk_triage → [general_agent | plan_agent] → final_answer → END。
+
+plan_agent 作为独立子图（planner → fanout → [faq | pdf] → summarize），主图只感知一个节点。
+后续迁移 Supervisor 框架时，plan_agent 可直接作为一个 Agent 注册。
+"""
 
 from __future__ import annotations
-
-from typing import Literal
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.states import FinAgentInput, FinAgentState
-from app.agents.subgraphs.faq import faq_agent
 from app.agents.subgraphs.general import general_agent
-from app.agents.subgraphs.pdf import pdf_agent
-from app.agents.subgraphs.plan import plan_agent
+from app.agents.subgraphs.plan_agent import plan_agent
 from app.agents.supervisor import analyze_and_route_query, route_query
+from app.agents.guardrails import guardrails_edge, guardrails_node
+from app.agents.risk_triage import risk_triage_edge, risk_triage_node
+from app.agents.final_answer import final_answer_node
+from app.agents.context_compressor import compress_context
 
 _compiled_graph = None
-
-_PlanTarget = Literal["faq_agent", "pdf_agent", "__end__"]
-
-
-def _route_from_plan(state: FinAgentState) -> _PlanTarget:
-    """Plan Agent 之后的子路由：faq → faq_agent；pdf → pdf_agent。"""
-    route = state.get("route", "faq")
-    if route == "faq":
-        return "faq_agent"
-    if route == "pdf":
-        return "pdf_agent"
-    return "__end__"
 
 
 def build_graph() -> StateGraph:
     """构建未编译的 StateGraph（便于单测与 export）。"""
     builder = StateGraph(FinAgentState, input_schema=FinAgentInput)
 
+    builder.add_node("guardrails", guardrails_node)
+    builder.add_node("context_compressor", compress_context)
     builder.add_node("supervisor", analyze_and_route_query)
+    builder.add_node("risk_triage", risk_triage_node)
     builder.add_node("general_agent", general_agent)
     builder.add_node("plan_agent", plan_agent)
-    builder.add_node("faq_agent", faq_agent)
-    builder.add_node("pdf_agent", pdf_agent)
+    builder.add_node("final_answer", final_answer_node)
 
-    builder.add_edge(START, "supervisor")
+    # Layer 1: START → guardrails
+    builder.add_edge(START, "guardrails")
+    builder.add_conditional_edges(
+        "guardrails",
+        guardrails_edge,
+        {
+            "context_compressor": "context_compressor",
+            "final_answer": "final_answer",
+        },
+    )
+
+    # Layer 2: context_compressor → supervisor
+    builder.add_edge("context_compressor", "supervisor")
     builder.add_conditional_edges(
         "supervisor",
         route_query,
+        {
+            "general_agent": "general_agent",
+            "risk_triage": "risk_triage",
+            "error_handler": "final_answer",
+        },
+    )
+
+    # Layer 3: risk_triage → general / plan_agent / END
+    builder.add_conditional_edges(
+        "risk_triage",
+        risk_triage_edge,
         {
             "general_agent": "general_agent",
             "plan_agent": "plan_agent",
             "__end__": END,
         },
     )
-    builder.add_conditional_edges(
-        "plan_agent",
-        _route_from_plan,
-        {
-            "faq_agent": "faq_agent",
-            "pdf_agent": "pdf_agent",
-            "__end__": END,
-        },
-    )
-    builder.add_edge("general_agent", END)
-    builder.add_edge("faq_agent", END)
-    builder.add_edge("pdf_agent", END)
+
+    # Layer 4: 汇聚 → final_answer → END
+    builder.add_edge("general_agent", "final_answer")
+    builder.add_edge("plan_agent", "final_answer")
+    builder.add_edge("final_answer", END)
 
     return builder
 

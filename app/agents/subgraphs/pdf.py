@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agents.llm import get_pdf_llm
-from app.agents.prompts.pdf import PDF_BUSY_ANSWER, PDF_NO_CONTEXT_ANSWER, PDF_SYSTEM_PROMPT
+from app.agents.subgraphs.prompts.pdf import PDF_BUSY_ANSWER, PDF_NO_CONTEXT_ANSWER, PDF_SYSTEM_PROMPT
 from app.agents.states import Citation, FinAgentState
 from app.core.config import settings
 from app.core.logger import get_logger
@@ -57,9 +57,17 @@ async def pdf_agent(
     state: FinAgentState,
     config: RunnableConfig | None = None,
 ) -> dict:
-    query = _latest_user_query(list(state.get("messages") or []))
+    # 🔑 fanout 传入的子问题优先
+    sub_question = state.get("sub_question", "")
+    sub_task_id = state.get("sub_task_id", "")
+
+    if sub_question:
+        query = sub_question
+    else:
+        query = _latest_user_query(list(state.get("messages") or []))
+
     metadata_filters = infer_pdf_metadata_filters(query)
-    logger.info("pdf_agent query={} filters={}", query[:80], metadata_filters)
+    logger.info("pdf_agent query={} sub_task_id={} filters={}", query[:80], sub_task_id, metadata_filters)
 
     retriever = get_pdf_retriever(
         top_k=5,
@@ -68,6 +76,8 @@ async def pdf_agent(
         hybrid=True,
     )
     hits = retriever.search(query, top_k=5, metadata_filters=metadata_filters)
+
+    citations = _hits_to_citations(hits) if hits else []
 
     min_score = settings.PDF_MIN_RELEVANCE_SCORE
     if not hits or hits[0].score < min_score:
@@ -78,7 +88,16 @@ async def pdf_agent(
         )
         return {
             "messages": [AIMessage(content=PDF_NO_CONTEXT_ANSWER)],
-            "citations": [],
+            "citations": citations,
+            "task_results": [
+                {
+                    "sub_task_id": sub_task_id,
+                    "question": query,
+                    "type": "pdf",
+                    "context": "（未找到相关文档条目）",
+                }
+            ],
+            "steps": ["pdf_agent"],
         }
 
     context = _build_context(hits)
@@ -103,10 +122,28 @@ async def pdf_agent(
         return {
             "messages": [AIMessage(content=PDF_BUSY_ANSWER)],
             "citations": citations,
+            "task_results": [
+                {
+                    "sub_task_id": sub_task_id,
+                    "question": query,
+                    "type": "pdf",
+                    "context": context,
+                }
+            ],
+            "steps": ["pdf_agent"],
         }
 
     logger.info("pdf_agent hits={} top1_score={:.4f}", len(hits), hits[0].score)
     return {
         "messages": [AIMessage(content=answer)],
         "citations": citations,
+        "task_results": [
+            {
+                "sub_task_id": sub_task_id,
+                "question": query,
+                "type": "pdf",
+                "context": f"[LLM 回答] {answer}",
+            }
+        ],
+        "steps": ["pdf_agent"],
     }

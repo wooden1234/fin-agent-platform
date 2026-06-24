@@ -1,4 +1,4 @@
-"""Supervisor：意图分类 + 风险分级（Week 3 Day 2）。"""
+"""Supervisor：意图分类（仅分类，风险已拆至 risk_triage）。"""
 
 from __future__ import annotations
 
@@ -14,15 +14,15 @@ from app.core.logger import get_logger
 
 logger = get_logger(service="supervisor")
 
-# 顶层路由：Supervisor 输出 general / plan，分别走 general_agent / plan_agent
-RouteTarget = Literal["general_agent", "plan_agent", "__end__"]
+# 顶层路由：Supervisor 输出 general / plan，分别走 general_agent / risk_triage
+RouteTarget = Literal["general_agent", "risk_triage", "error_handler"]
 
 
 async def analyze_and_route_query(
     state: FinAgentState,
     config: RunnableConfig,
 ) -> dict[str, str]:
-    """分析用户问题，写入 route / logic / risk_level。
+    """分析用户问题，写入 route / logic。
 
     使用 ``with_structured_output(Router)`` 约束 LLM 输出。
     """
@@ -40,23 +40,21 @@ async def analyze_and_route_query(
         ).ainvoke(messages, config=config),
     )
     logger.info(
-        "route={} risk_level={} logic={}",
+        "route={} logic={}",
         router.type,
-        router.risk_level,
         router.logic,
     )
 
     return {
         "route": router.type,
         "logic": router.logic,
-        "risk_level": router.risk_level,
     }
 
 
 def route_query(state: FinAgentState) -> RouteTarget:
     """条件边：根据 Supervisor 的 route 选择下一节点。
 
-    ``general`` → ``general_agent``；``plan`` → ``plan_agent``；其余 → ``__end__``。
+    ``general`` → ``general_agent``；``plan`` → ``risk_triage``；其余 → ``error_handler``。
     """
     route = state.get("route", "general")
     logger.info("route_query: route={}", route)
@@ -64,7 +62,7 @@ def route_query(state: FinAgentState) -> RouteTarget:
     if route == "general":
         return "general_agent"
     if route == "plan":
-        return "plan_agent"
+        return "risk_triage"
 
-    logger.warning("未知 route={}，结束图执行", route)
-    return "__end__"
+    logger.warning("未知 route={}，走错误兜底", route)
+    return "error_handler"

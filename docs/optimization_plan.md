@@ -19,6 +19,9 @@
   - [4.7 FAQ/PDF Agent 职责拆分](#47-faqpdf-agent-职责拆分检索与生成分离)
   - [4.8 状态模型增强](#48-状态模型增强)
 - [5. 优化后目标架构](#5-优化后目标架构)
+  - [5.1 方案一：Map-Reduce 并行分发](#51-方案一map-reduce-并行分发)
+  - [5.2 方案二：混合架构 — General DAG + Plan Supervisor 子图](#52-方案二混合架构--general-dag--plan-supervisor-子图)
+  - [5.3 方案对比与推荐](#53-方案对比与推荐)
 - [6. 实施路线图](#6-实施路线图)
 
 ---
@@ -906,7 +909,18 @@ class FinAgentState(TypedDict):
 
 ## 5. 优化后目标架构
 
-### 5.1 图拓扑
+我们提供 **两种可选方案**，核心区别在于 `plan` 分支内部采用何种编排模式：
+
+- **方案一（Map-Reduce）**：Planner 一次性分解 → `List[Send]` 并行分发 → Summarize 融合，适合**子任务间无依赖、可完全并行**的场景。
+- **方案二（混合架构）**：`general` 保持 DAG 快速通道，`plan` 分支改为 **Supervisor 循环调度子图**，适合**需要多步协作、检索改写重试、不确定步数**的复杂场景。
+
+两种方案中 `general` 分支、`guardrails`、`final_answer`、`error_handler` 完全相同，仅 `plan` 分支内部拓扑不同。
+
+---
+
+### 5.1 方案一：Map-Reduce 并行分发
+
+#### 5.1.1 图拓扑
 
 ```mermaid
 graph TD
@@ -933,13 +947,13 @@ graph TD
     final_answer --> END
 ```
 
-### 5.2 节点清单（优化后）
+#### 5.1.2 方案一节点清单
 
 | 节点 | 类型 | 职责 | 状态 |
 |------|------|------|------|
 | `supervisor` | 路由 | 意图分类 + 风险分级 | 保留，微调 route_query 兜底 |
 | `guardrails` | 护栏 | 范围校验 + 注入检测 | 🆕 新增 |
-| `planner` | 分解 | 将复杂问题拆分为子任务 | 🆕 新增 |
+| `planner` | 分解 | 将复杂问题一次性拆分为子任务 | 🆕 新增 |
 | `faq_agent` | 检索 | 知识库检索（不含生成） | 🔧 改造：去除 LLM 生成 |
 | `pdf_agent` | 检索 | PDF 文档检索（不含生成） | 🔧 改造：去除 LLM 生成 |
 | `general_agent` | 生成 | 纯对话/回溯 | 保留 |
@@ -949,7 +963,7 @@ graph TD
 
 > `plan_agent` 不再需要，其职责被 `planner` 的 `SubTask.type` 字段替代。
 
-### 5.3 数据流
+#### 5.1.3 方案一数据流
 
 ```
 用户问题
@@ -964,80 +978,387 @@ graph TD
               → END (SSE 流式输出)
 ```
 
+#### 5.1.4 方案一优缺点
+
+| 优点 | 缺点 |
+|------|------|
+| 并行执行，延迟低 | 无法处理子任务之间有依赖的情况 |
+| `Annotated[List, add]` 自动归并结果，代码简洁 | 一次分解，无法根据中间结果动态调整 |
+| 与 assistgen 模式一致，有成熟参考 | 若检索无结果，无法改写查询重试 |
+
 ---
+
+### 5.2 方案二：混合架构 — General DAG + Plan Supervisor 子图
+
+#### 5.2.1 设计思路
+
+核心原则：**简单路径走 DAG 快速通道，复杂路径进 Supervisor 循环**。
+
+```
+Layer 1: 顶层路由（DAG，不进入循环）
+  START → supervisor → general_agent → final_answer → END   (快速通道)
+                    → guardrails → plan_supervisor_subgraph  (进入循环)
+                    → error_handler → final_answer → END     (兜底)
+
+Layer 2: plan 子图（Supervisor 循环调度）
+  plan_supervisor ⇄ [faq_agent | pdf_agent | account_agent]
+       ↓ FINISH
+     final_answer → END
+```
+
+#### 5.2.2 图拓扑
+
+```mermaid
+graph TD
+    START --> SUP[supervisor 顶层分类]
+    SUP -->|general| GEN[general_agent] --> FA[final_answer] --> END
+    SUP -->|plan| GRD[guardrails]
+    SUP -->|unknown| ERR[error_handler] --> FA
+
+    GRD -->|pass| PLAN_SUB[plan_supervisor 子图]
+    GRD -->|block| FA
+
+    subgraph plan_supervisor ["plan 子图: Supervisor 循环调度"]
+        PS[PlanSupervisor LLM]
+        PS -->|call_faq| FAQ[faq_agent]
+        PS -->|call_pdf| PDF[pdf_agent]
+        PS -->|call_account| ACC[account_agent 未来]
+        FAQ --> PS
+        PDF --> PS
+        ACC --> PS
+        PS -->|FINISH| OUT[→ 返回主图]
+    end
+
+    OUT --> FA
+```
+
+#### 5.2.3 方案二节点清单
+
+| 节点 | 类型 | 职责 | 状态 |
+|------|------|------|------|
+| `supervisor` | 路由 | 意图分类 general/plan + 风险分级 | 保留 |
+| `guardrails` | 护栏 | 范围校验 + 注入检测 | 🆕 新增 |
+| `plan_supervisor` | 调度 | **Supervisor 循环**：决定调用哪个 Worker、何时结束 | 🆕 新增（子图） |
+| `faq_agent` | Worker | 知识库检索 + 生成回答 | 保留（可改造为纯检索） |
+| `pdf_agent` | Worker | PDF 文档检索 + 生成回答 | 保留（可改造为纯检索） |
+| `general_agent` | 生成 | 纯 LLM 对话/回溯（DAG 快速通道） | 保留 |
+| `final_answer` | 输出 | 统一格式化最终输出 | 🆕 新增 |
+| `error_handler` | 兜底 | 异常情况友好回复 | 🆕 新增 |
+
+> **关键变化**：`plan_agent`（二选一路由）被 `plan_supervisor` 子图取代；`summarize` 的融合逻辑内化到 Supervisor 的 FINISH 决策中。
+
+#### 5.2.4 Plan Supervisor 调度逻辑
+
+Plan Supervisor 是一个 LLM 节点，每次 Worker 返回后重新决策：
+
+```
+Worker 返回结果 → Supervisor LLM 评估 →
+  ├── 问题已充分回答 → FINISH（生成最终回答）
+  ├── 需要另一个 Worker 补充 → call_faq / call_pdf / call_account
+  ├── 检索结果不够好 → 改写 query，重新调用同一 Worker
+  └── 迭代次数 ≥ 5 → 强制 FINISH（防死循环）
+```
+
+**Plan Supervisor 结构化输出**：
+
+```python
+class PlanSupervisorDecision(BaseModel):
+    """Plan Supervisor 的调度决策"""
+    action: Literal["call_faq", "call_pdf", "call_account", "FINISH"]
+    query: str = Field(
+        default="",
+        description="传给 Worker 的查询（可为改写后的 query，FINISH 时可为空）"
+    )
+    logic: str = Field(description="决策理由，1-2 句中文")
+    final_answer: str = Field(
+        default="",
+        description="FINISH 时的最终回答，其他 action 为空"
+    )
+```
+
+#### 5.2.5 Plan Supervisor Prompt
+
+```python
+PLAN_SUPERVISOR_SYSTEM_PROMPT = """你是金融智能客服平台 plan 分支的调度 Supervisor。
+
+你可以调用以下 Worker：
+- call_faq：通用金融知识库检索问答（股票、基金、交易规则等）
+- call_pdf：PDF 文档检索问答（年报、研报、白皮书、政策文件等）
+- call_account：账户查询（未来接入）
+
+你的决策循环：
+1. 收到用户问题后，判断需要哪个 Worker
+2. Worker 返回结果后，评估是否充分
+3. 不满意 → 改写 query 重试或换另一个 Worker
+4. 满意 → FINISH，生成完整的最终回答
+
+## 决策规则
+- 简单 FAQ 类问题：调一次 call_faq 即可 FINISH
+- PDF 文档查询：调一次 call_pdf 即可 FINISH
+- 跨源问题（如"茅台年报 + T+1 规则"）：先调 call_pdf 再调 call_faq，汇总后 FINISH
+- 检索无结果：改写 query 重试（最多 2 次），仍无结果则告知用户
+- 禁止超过 5 轮循环
+
+## FINISH 时的回答要求
+- 综合所有 Worker 的返回结果
+- 标注信息来源（[来源: xxx]）
+- 去重、融合、以清晰结构呈现
+
+## 输出格式
+{"action": "call_faq", "query": "T+1 交易制度是什么？", "logic": "用户询问交易规则，先走FAQ知识库检索"}
+或
+{"action": "FINISH", "query": "", "logic": "所有子问题已回答完毕", "final_answer": "根据知识库和文档检索结果...（完整回答）"}
+"""
+```
+
+#### 5.2.6 方案二核心代码骨架
+
+```python
+# app/agents/subgraphs/plan_supervisor.py
+
+async def plan_supervisor_node(state: FinAgentState, config) -> dict:
+    """Plan Supervisor：决定下一步调用哪个 Worker 或结束"""
+    iteration = state.get("supervisor_iteration", 0)
+    if iteration >= 5:
+        return _force_finish(state)
+
+    model = get_router_llm()
+    messages = _build_supervisor_messages(state)
+    decision = cast(
+        PlanSupervisorDecision,
+        await model.with_structured_output(
+            PlanSupervisorDecision, method="json_mode"
+        ).ainvoke(messages, config=config),
+    )
+
+    if decision.action == "FINISH":
+        return {
+            "supervisor_decision": "FINISH",
+            "final_summary": decision.final_answer,
+        }
+
+    return {
+        "supervisor_decision": decision.action,   # call_faq / call_pdf / call_account
+        "supervisor_iteration": iteration + 1,
+        "route": decision.action.replace("call_", ""),  # faq / pdf / account
+    }
+
+
+def route_from_supervisor(state: FinAgentState) -> str:
+    """条件边：Supervisor 决策 → 对应 Worker 或 END"""
+    decision = state.get("supervisor_decision", "FINISH")
+    if decision == "call_faq":
+        return "faq_agent"
+    if decision == "call_pdf":
+        return "pdf_agent"
+    if decision == "call_account":
+        return "account_agent"
+    return "FINISH"  # → END
+
+
+# app/agents/graph.py
+
+def build_plan_supervisor_subgraph():
+    """plan 分支内部：Supervisor 循环调度 Worker"""
+    builder = StateGraph(FinAgentState, input_schema=FinAgentInput)
+
+    builder.add_node("plan_supervisor_node", plan_supervisor_node)
+    builder.add_node("faq_agent", faq_agent)
+    builder.add_node("pdf_agent", pdf_agent)
+    # builder.add_node("account_agent", account_agent)  # 未来
+
+    builder.add_edge(START, "plan_supervisor_node")
+    builder.add_conditional_edges(
+        "plan_supervisor_node",
+        route_from_supervisor,
+        {
+            "faq_agent": "faq_agent",
+            "pdf_agent": "pdf_agent",
+            "FINISH": END,
+        },
+    )
+    # Worker 完成后回到 Supervisor 重新决策
+    builder.add_edge("faq_agent", "plan_supervisor_node")
+    builder.add_edge("pdf_agent", "plan_supervisor_node")
+
+    return builder.compile()
+
+
+def build_graph():
+    builder = StateGraph(FinAgentState, input_schema=FinAgentInput)
+
+    builder.add_node("supervisor", analyze_and_route_query)
+    builder.add_node("guardrails", guardrails_node)
+    builder.add_node("general_agent", general_agent)
+    builder.add_node("plan_agent", build_plan_supervisor_subgraph())  # 子图作为节点
+    builder.add_node("final_answer", final_answer_node)
+    builder.add_node("error_handler", error_handler_node)
+
+    builder.add_edge(START, "supervisor")
+    builder.add_conditional_edges(
+        "supervisor", route_query,
+        {
+            "general_agent": "general_agent",
+            "guardrails": "guardrails",
+            "error_handler": "error_handler",
+        },
+    )
+    builder.add_conditional_edges(
+        "guardrails", guardrails_conditional_edge,
+        {"plan_agent": "plan_agent", "final_answer": "final_answer"},
+    )
+    builder.add_edge("general_agent", "final_answer")
+    builder.add_edge("plan_agent", "final_answer")
+    builder.add_edge("error_handler", "final_answer")
+    builder.add_edge("final_answer", END)
+
+    return builder
+```
+
+#### 5.2.7 方案二优缺点
+
+| 优点 | 缺点 |
+|------|------|
+| 支持多步协作（先 PDF 再 FAQ 再汇总） | 每次 Worker 返回后多一次 Supervisor LLM 调用（+1~2s 延迟） |
+| 检索无结果时可改写 query 重试 | 调试/观测更复杂，需要追踪多轮决策 |
+| 子任务间有依赖时也能处理 | 单轮简单查询的 plan 路径比 DAG 多一次 LLM |
+| `general` 快速通道不受影响 | 需要防死循环逻辑 |
+| 改动量小（~200 行新增 + graph.py 小改） | — |
+
+---
+
+### 5.3 方案对比与推荐
+
+| 维度 | 方案一：Map-Reduce | 方案二：混合架构 |
+|------|:---:|:---:|
+| **单轮简单查询延迟** | 🟢 最优（无额外 LLM） | 🟡 plan 多 1 次 LLM |
+| **多意图** "茅台年报 + T+1" | 🟢 并行，快 | 🟢 串行，慢但灵活 |
+| **子任务间有依赖** | 🔴 不支持 | 🟢 原生支持 |
+| **检索改写重试** | 🔴 不支持 | 🟢 原生支持 |
+| **不确定步数** | 🔴 固定步数 | 🟢 循环直到满意 |
+| **代码复杂度** | 🟡 中等（Planner + fanout + Summarize） | 🟡 中等（Supervisor 子图） |
+| **与当前代码差异** | 🔴 大（需改造 faq/pdf + 新增多个节点） | 🟢 小（faq/pdf 可保持不变） |
+| **`general` 分支影响** | 🟢 不受影响 | 🟢 不受影响 |
+| **适用场景** | 子任务独立、可完全并行的批量查询 | 需要多步协作、检索重试、动态决策 |
+
+#### 推荐策略：分阶段演进
+
+```mermaid
+graph LR
+    A[当前: 全 DAG] -->|"Phase 1<br/>低风险改动"| B[混合架构<br/>general DAG + plan Supervisor]
+    B -->|"Phase 2<br/>如需极致并行"| C[plan 内部 Map-Reduce<br/>Supervisor 调度 + fanout 分发]
+```
+
+1. **Phase 1（推荐先行）**：采用方案二混合架构。改动量小、风险可控，且 Supervisor 循环天然支持后续在循环内部加入 `List[Send]` 并行分发。
+2. **Phase 2（可选进阶）**：如果业务中出现大量「可完全并行的独立子任务」，在 Supervisor 内部加入 Map-Reduce fanout 能力——Supervisor 一次性分解为多个独立子任务后并行调用 Worker，结果汇总后再由 Supervisor 决定 FINISH 或继续。
+
+> **一句话总结**：方案二是当前最优选择——兼顾低改动成本与高扩展性，`general` 保持 DAG 低延迟快速通道，`plan` 用 Supervisor 循环获得多步协作 + 检索重试能力，且为未来并行化预留接口。
+
+---
+
+### 5.4 数据流（两种方案通用上层）
+
+```
+用户问题
+  → supervisor: 注入 route, logic, risk_level
+    → route=general: general_agent 生成回答 → final_answer
+    → route=plan:
+        → guardrails: 注入 guardrails_decision
+          → block → final_answer（委婉拒绝）
+          → pass → plan 分支（方案一 Planner→fanout 或 方案二 Supervisor 循环）
+            → final_answer: 注入 messages[AIMessage], citations
+    → route=unknown: error_handler → final_answer
+```
 
 ## 6. 实施路线图
 
-### Phase 1：基础重构（P0，1-2 天）
+> 以下路线图按 **方案二（混合架构）→ 方案一（Map-Reduce）** 的分阶段顺序排列。
+
+### Phase 1：混合架构 — 最小可行改造（P0，1-2 天）
+
+**目标**：让 `plan` 分支具备多步协作 + 检索重试能力，`general` 保持 DAG 快速通道。
 
 | 任务 | 影响范围 | 说明 |
 |------|----------|------|
-| 1.1 增强状态模型 | `states.py` | 新增 `Annotated[List, add]` reducer 字段（task_results, citations, steps, errors） |
-| 1.2 改造 FAQ Agent 为纯检索 | `subgraphs/faq.py` | 去除 LLM 生成逻辑，只返回 `task_results` + `citations` |
-| 1.3 改造 PDF Agent 为纯检索 | `subgraphs/pdf.py` | 同上 |
-| 1.4 新增 error_handler 节点 | `error_handler.py` | 统一异常兜底 |
-| 1.5 修改 route_query 兜底逻辑 | `supervisor.py` | `__end__` → `error_handler` |
+| 1.1 增强状态模型 | `states.py` | 新增 `supervisor_decision`、`supervisor_iteration`、`final_summary`、`steps`、`errors` 等字段 |
+| 1.2 新增 `plan_supervisor` 子图 | `subgraphs/plan_supervisor.py` | Supervisor 循环调度节点 + 条件边 + Prompt |
+| 1.3 新增 `final_answer` 节点 | `final_answer.py` | 统一格式化最终输出 + 引用 |
+| 1.4 新增 `error_handler` 节点 | `error_handler.py` | 统一异常兜底 |
+| 1.5 重构 `graph.py` | `graph.py` | 加入子图、新节点、调整拓扑；`route_query` 兜底改为 `error_handler` |
+| 1.6 新增 `guardrails` 节点（可选） | `guardrails.py`, `prompts/guardrails.py` | 范围校验 + 注入检测 |
 
-**验证**：现有单分支 FAQ/PDF 流程仍能正常工作（检索→汇总→最终回答链路跑通）。
+**验证**：
+- 单轮 FAQ 问题端到端跑通，SSE 流式输出正常
+- "茅台年报 + T+1 规则" 复合问题：先调 pdf 再调 faq，最终回答包含两个来源
+- 检索无结果时 Supervisor 改写 query 重试
 
-### Phase 2：证据融合（P0，1-2 天）
-
-| 任务 | 影响范围 | 说明 |
-|------|----------|------|
-| 2.1 新增 Summarize 节点 | `summarize.py`, `prompts/summarize.py` | 融合多分支 task_results 生成统一回答 |
-| 2.2 新增 final_answer 节点 | `final_answer.py` | 统一格式化输出 |
-| 2.3 调整图拓扑 | `graph.py` | 加入 summarize → final_answer 边 |
-
-**验证**：单分支流程经过 summarize + final_answer 端到端跑通，SSE 流式输出正常。
-
-### Phase 3：并行能力（P1，2-3 天）
+### Phase 2：安全加固 + 检索与生成分离（P1，1-2 天）
 
 | 任务 | 影响范围 | 说明 |
 |------|----------|------|
-| 3.1 新增 Planner 节点 | `planner.py`, `prompts/planner.py` | 任务分解 |
-| 3.2 实现 fanout 分发边 | `graph.py` | `fanout_to_retrievers` 返回 `List[Send]` |
-| 3.3 重构图拓扑 | `graph.py` | supervisor → guardrails → planner → fanout → summarize → final_answer |
-| 3.4 适配 SSE 流式输出 | `api/agent.py` | 支持 summarize 节点的流式 token（如需要） |
+| 2.1 完善 Guardrails 节点 | `guardrails.py` | 补全注入检测、敏感内容过滤逻辑 |
+| 2.2 改造 FAQ Agent 为纯检索（可选） | `subgraphs/faq.py` | 去除 LLM 生成逻辑，只返回 `context` + `citations` |
+| 2.3 改造 PDF Agent 为纯检索（可选） | `subgraphs/pdf.py` | 同上 |
+| 2.4 增强 Supervisor 汇总能力 | `subgraphs/plan_supervisor.py` | FINISH 时融合多源结果，标注来源 |
 
-**验证**：复合问题（如「茅台年报 + T+1 规则」）同时触发 FAQ 和 PDF 检索，结果成功融合。
+**验证**：越狱/无关问题被 guardrails 拦截，返回友好提示。
 
-### Phase 4：安全加固（P1，1 天）
+### Phase 3：Map-Reduce 并行化（P2，2-3 天，按需）
 
-| 任务 | 影响范围 | 说明 |
-|------|----------|------|
-| 4.1 新增 Guardrails 节点 | `guardrails.py`, `prompts/guardrails.py` | 范围校验 + 注入检测 |
-| 4.2 加入图拓扑 | `graph.py` | supervisor → guardrails → planner |
-
-**验证**：越狱/无关问题被拦截，返回友好提示。
-
-### Phase 5：清理与文档（P2，0.5-1 天）
+**触发条件**：业务中出现大量「子任务完全独立、可并行」的批量查询场景。
 
 | 任务 | 影响范围 | 说明 |
 |------|----------|------|
-| 5.1 移除 plan_agent | `subgraphs/plan.py`, `prompts/plan.py`, `states.py`, `graph.py` | 职责已被 Planner + SubTask.type 替代 |
-| 5.2 更新 `export_agent_graph.py` | `scripts/` | 生成优化后的拓扑图 |
-| 5.3 更新单元测试 | `tests/` | 覆盖并行分支、融合、兜底等场景 |
-| 5.4 更新操作文档 | `docs/` | README、RAG与DB混合问答操作文档 |
+| 3.1 新增 `Planner` 节点 | `planner.py`, `prompts/planner.py` | 任务分解 |
+| 3.2 Supervisor 内嵌 fanout | `subgraphs/plan_supervisor.py` | Supervisor 决策 `fanout` 时返回 `List[Send]` 并行分发 |
+| 3.3 新增 `Summarize` 节点 | `summarize.py`, `prompts/summarize.py` | 融合并行分支结果 |
+| 3.4 `Annotated[List, add]` reducer | `states.py` | `task_results`, `citations` 改用 `add` reducer |
+
+**验证**：复合问题同时触发 FAQ 和 PDF 检索，结果成功融合。
+
+### Phase 4：清理与文档（P2，0.5-1 天）
+
+| 任务 | 影响范围 | 说明 |
+|------|----------|------|
+| 4.1 移除 `plan_agent` | `subgraphs/plan.py`, `prompts/plan.py` | 职责已被 `plan_supervisor` 替代 |
+| 4.2 更新 `export_agent_graph.py` | `scripts/` | 生成优化后的拓扑图 |
+| 4.3 更新单元测试 | `tests/` | 覆盖 Supervisor 循环、guardrails、兜底等场景 |
+| 4.4 更新操作文档 | `docs/` | 同步架构变更 |
 
 ---
 
 ## 附录：改动文件清单
 
+### Phase 1：混合架构（方案二，推荐先行）
+
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `app/agents/states.py` | 🔧 修改 | 增加 reducer 字段 & 新类型 |
-| `app/agents/graph.py` | 🔧 大幅修改 | 重构图拓扑，加入新节点和 fanout 边 |
-| `app/agents/supervisor.py` | 🔧 小改 | route_query 兜底改为 error_handler |
+| `app/agents/states.py` | 🔧 修改 | 增加 `supervisor_decision`、`supervisor_iteration`、`final_summary`、`steps`、`errors` 等字段 |
+| `app/agents/graph.py` | 🔧 修改 | 重构拓扑：加入 `plan_supervisor` 子图、`guardrails`、`final_answer`、`error_handler` |
+| `app/agents/supervisor.py` | 🔧 小改 | route_query 兜底改为 error_handler；未知路由走兜底 |
+| `app/agents/subgraphs/plan_supervisor.py` | 🆕 新增 | Plan Supervisor 子图：循环调度节点 + 条件边 + 防死循环 |
+| `app/agents/guardrails.py` | 🆕 新增 | Guardrails 护栏节点：范围校验 + 注入检测 |
+| `app/agents/final_answer.py` | 🆕 新增 | FinalAnswer 统一格式化输出 + 引用 |
+| `app/agents/error_handler.py` | 🆕 新增 | ErrorHandler 异常兜底节点 |
+| `app/agents/prompts/supervisor.py` | 🔧 修改 | 可选增加 Supervisor Prompt 中的 plan_supervisor 相关说明 |
+| `app/agents/prompts/plan_supervisor.py` | 🆕 新增 | Plan Supervisor Prompt |
+| `app/agents/prompts/guardrails.py` | 🆕 新增 | Guardrails Prompt |
+| `app/agents/subgraphs/plan.py` | ❌ 移除 | 二选一路由被 `plan_supervisor` 子图取代 |
+| `app/agents/prompts/plan.py` | ❌ 移除 | 不再需要 |
+| `app/agents/subgraphs/faq.py` | 保留 | 可保持不变（Worker 模式），也可后续改造为纯检索 |
+| `app/agents/subgraphs/pdf.py` | 保留 | 同上 |
+| `app/agents/subgraphs/general.py` | 保留 | DAG 快速通道不受影响 |
+| `app/api/agent.py` | 🔧 小改 | SSE 流式适配新节点名称 |
+
+### Phase 3：Map-Reduce 进阶（按需）
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `app/agents/planner.py` | 🆕 新增 | Planner 任务分解节点 |
+| `app/agents/summarize.py` | 🆕 新增 | Summarize 证据融合节点 |
+| `app/agents/prompts/planner.py` | 🆕 新增 | Planner Prompt |
+| `app/agents/prompts/summarize.py` | 🆕 新增 | Summarize Prompt |
+| `app/agents/states.py` | 🔧 修改 | 增加 `TaskResult`、`sub_tasks` 类型，`task_results`/`citations` 改用 `add` reducer |
+| `app/agents/subgraphs/plan_supervisor.py` | 🔧 修改 | Supervisor 增加 `fanout` action，支持 `List[Send]` 并行分发 |
 | `app/agents/subgraphs/faq.py` | 🔧 改造 | 去除 LLM 生成，变为纯检索 |
 | `app/agents/subgraphs/pdf.py` | 🔧 改造 | 同上 |
-| `app/agents/subgraphs/plan.py` | ❌ 移除 | 被 Planner + SubTask.type 替代 |
-| `app/agents/planner.py` | 🆕 新增 | Planner 任务分解节点 |
-| `app/agents/guardrails.py` | 🆕 新增 | Guardrails 护栏节点 |
-| `app/agents/summarize.py` | 🆕 新增 | Summarize 证据融合节点 |
-| `app/agents/final_answer.py` | 🆕 新增 | FinalAnswer 统一输出节点 |
-| `app/agents/error_handler.py` | 🆕 新增 | ErrorHandler 兜底节点 |
-| `app/agents/prompts/planner.py` | 🆕 新增 | Planner Prompt |
-| `app/agents/prompts/guardrails.py` | 🆕 新增 | Guardrails Prompt |
-| `app/agents/prompts/summarize.py` | 🆕 新增 | Summarize Prompt |
-| `app/agents/prompts/plan.py` | ❌ 移除 | Plan Agent Prompt 不再需要 |
-| `app/api/agent.py` | 🔧 小改 | SSE 流式适配新节点名称 |

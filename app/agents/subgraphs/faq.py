@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agents.llm import get_faq_llm
-from app.agents.prompts.faq import FAQ_BUSY_ANSWER, FAQ_SYSTEM_PROMPT, NO_CONTEXT_ANSWER
+from app.agents.subgraphs.prompts.faq import FAQ_BUSY_ANSWER, FAQ_SYSTEM_PROMPT, NO_CONTEXT_ANSWER
 from app.agents.states import Citation, FinAgentState
 from app.core.config import settings
 from app.core.logger import get_logger
@@ -43,11 +43,21 @@ async def faq_agent(
     state: FinAgentState,
     config: RunnableConfig | None = None,
 ) -> dict:
-    query = _latest_user_query(list(state.get("messages") or []))
-    logger.info("faq_agent query={}", query[:80])
+    # 🔑 fanout 传入的子问题优先
+    sub_question = state.get("sub_question", "")
+    sub_task_id = state.get("sub_task_id", "")
+
+    if sub_question:
+        query = sub_question
+    else:
+        query = _latest_user_query(list(state.get("messages") or []))
+
+    logger.info("faq_agent query={} sub_task_id={}", query[:80], sub_task_id)
 
     retriever = get_faq_retriever(top_k=3, similarity_threshold=None)
     hits = retriever.search(query, top_k=3)
+
+    citations = _hits_to_citations(hits) if hits else []
 
     min_score = settings.FAQ_MIN_RELEVANCE_SCORE
     if not hits or hits[0].score < min_score:
@@ -58,7 +68,15 @@ async def faq_agent(
         )
         return {
             "messages": [AIMessage(content=NO_CONTEXT_ANSWER)],
-            "citations": [],
+            "citations": citations,
+            "task_results": [
+                {
+                    "sub_task_id": sub_task_id,
+                    "question": query,
+                    "type": "faq",
+                    "context": "（未找到相关知识库条目）",
+                }
+            ],
         }
 
     context = _build_context(hits)
@@ -70,12 +88,9 @@ async def faq_agent(
         *history,
     ]
     try:
-        # resp = await get_faq_llm().ainvoke(llm_messages, config=config)
-        # answer = resp.content if isinstance(resp.content, str) else str(resp.content)
         llm = get_faq_llm()
         parts: list[str] = []
         async for chunk in llm.astream(llm_messages, config=config):
-            # ChatDeepSeek 流式时 chunk 是 AIMessageChunk
             if chunk.content:
                 parts.append(
                     chunk.content if isinstance(chunk.content, str) else str(chunk.content)
@@ -86,10 +101,26 @@ async def faq_agent(
         return {
             "messages": [AIMessage(content=FAQ_BUSY_ANSWER)],
             "citations": citations,
+            "task_results": [
+                {
+                    "sub_task_id": sub_task_id,
+                    "question": query,
+                    "type": "faq",
+                    "context": context,
+                }
+            ],
         }
 
     logger.info("faq_agent hits={} top1_score={:.4f}", len(hits), hits[0].score)
     return {
         "messages": [AIMessage(content=answer)],
         "citations": citations,
+        "task_results": [
+            {
+                "sub_task_id": sub_task_id,
+                "question": query,
+                "type": "faq",
+                "context": f"[LLM 回答] {answer}",
+            }
+        ],
     }

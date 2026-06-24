@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agents.llm import get_faq_llm
-from app.agents.prompts.general import GENERAL_BUSY_ANSWER, GENERAL_SYSTEM_PROMPT
+from app.agents.subgraphs.prompts.general import GENERAL_BUSY_ANSWER, GENERAL_SYSTEM_PROMPT
 from app.agents.states import FinAgentState
 from app.core.logger import get_logger
 
