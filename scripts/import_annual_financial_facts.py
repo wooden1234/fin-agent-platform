@@ -26,7 +26,13 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from app.core.database import AsyncSessionLocal  # noqa: E402
 from app.core.logger import get_logger  # noqa: E402
-from app.models.annual_financial_fact import AnnualFinancialFact  # noqa: E402
+from app.models.annual_financial_fact import (  # noqa: E402
+    AnnualFinancialFact,
+    AnnualFinancialTable,
+    AnnualReportDocument,
+    FinancialCompany,
+    FinancialMetric,
+)
 
 
 DEFAULT_INPUT = ROOT_DIR / "knowledge" / "cleaned" / "annual_financial_facts.jsonl"
@@ -128,20 +134,141 @@ def iter_rows(path: Path) -> Any:
 
 
 async def upsert_batch(rows: list[dict[str, Any]]) -> None:
-    stmt = insert(AnnualFinancialFact).values(rows)
+    async with AsyncSessionLocal() as session:
+        for row in rows:
+            company_id = await upsert_company(session, row)
+            document_id = await upsert_document(session, row, company_id)
+            table_id = await upsert_table(session, row, document_id)
+            metric_id = await upsert_metric(session, row)
+            await upsert_fact(session, row, table_id, metric_id)
+        await session.commit()
+
+
+def company_name_from_row(row: dict[str, Any]) -> str:
+    title = row["title"].strip()
+    if " Annual Report" in title:
+        return title.split(" Annual Report")[0].strip()
+    return title or row.get("ticker") or row["doc_id"]
+
+
+async def upsert_returning_id(
+    session,
+    model,
+    values: dict[str, Any],
+    *,
+    index_elements: list[str] | None = None,
+    constraint: str | None = None,
+    immutable_columns: set[str] | None = None,
+) -> int:
+    immutable_columns = immutable_columns or set()
+    stmt = insert(model).values(values)
     update_columns = {
         col.name: getattr(stmt.excluded, col.name)
-        for col in AnnualFinancialFact.__table__.columns
-        if col.name not in {"id", "created_at", *UPSERT_KEY}
+        for col in model.__table__.columns
+        if col.name not in {"id", "created_at", *immutable_columns}
+        and col.name in values
     }
     update_columns["updated_at"] = func.now()
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_annual_financial_fact_source_metric",
-        set_=update_columns,
+    if constraint is not None:
+        stmt = stmt.on_conflict_do_update(constraint=constraint, set_=update_columns)
+    else:
+        stmt = stmt.on_conflict_do_update(
+            index_elements=index_elements,
+            set_=update_columns,
+        )
+    result = await session.execute(stmt.returning(model.id))
+    return int(result.scalar_one())
+
+
+async def upsert_company(session, row: dict[str, Any]) -> int:
+    name = company_name_from_row(row)
+    ticker = row.get("ticker")
+    company_key = ticker or name.lower()
+    return await upsert_returning_id(
+        session,
+        FinancialCompany,
+        {
+            "company_key": company_key,
+            "name": name,
+            "ticker": ticker,
+        },
+        index_elements=["company_key"],
+        immutable_columns={"company_key"},
     )
-    async with AsyncSessionLocal() as session:
-        await session.execute(stmt)
-        await session.commit()
+
+
+async def upsert_document(session, row: dict[str, Any], company_id: int) -> int:
+    return await upsert_returning_id(
+        session,
+        AnnualReportDocument,
+        {
+            "doc_id": row["doc_id"],
+            "company_id": company_id,
+            "title": row["title"],
+            "fiscal_year": row["fiscal_year"],
+            "source": row["source"],
+        },
+        index_elements=["doc_id"],
+        immutable_columns={"doc_id"},
+    )
+
+
+async def upsert_table(session, row: dict[str, Any], document_id: int) -> int:
+    return await upsert_returning_id(
+        session,
+        AnnualFinancialTable,
+        {
+            "document_id": document_id,
+            "chunk_index": row["chunk_index"],
+            "page_num": row["page_num"],
+            "section": row["section"],
+            "table_kind": row["table_kind"],
+            "raw_table_text": row["raw_table_text"],
+        },
+        constraint="uq_annual_financial_table_document_chunk",
+        immutable_columns={"document_id", "chunk_index"},
+    )
+
+
+async def upsert_metric(session, row: dict[str, Any]) -> int:
+    return await upsert_returning_id(
+        session,
+        FinancialMetric,
+        {
+            "canonical_name": row["metric_name"],
+            "aliases": row["metric_alias"],
+            "statement_type": row["statement_type"],
+        },
+        index_elements=["canonical_name"],
+        immutable_columns={"canonical_name"},
+    )
+
+
+async def upsert_fact(
+    session,
+    row: dict[str, Any],
+    table_id: int,
+    metric_id: int,
+) -> int:
+    return await upsert_returning_id(
+        session,
+        AnnualFinancialFact,
+        {
+            "table_id": table_id,
+            "metric_id": metric_id,
+            "row_index": row["row_index"],
+            "period_label": row["period_label"],
+            "period_year": row["period_year"],
+            "period_type": row["period_type"],
+            "value": row["value"],
+            "raw_value": row["raw_value"],
+            "unit": row["unit"],
+            "currency": row["currency"],
+            "raw_row": row["raw_row"],
+        },
+        constraint="uq_annual_financial_fact_source_metric",
+        immutable_columns={"table_id", "row_index", "metric_id", "period_label"},
+    )
 
 
 async def count_existing() -> int:

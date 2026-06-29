@@ -15,7 +15,16 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from app.core.database import Base, engine
 from app.core.logger import get_logger
-from app.models import AnnualFinancialFact, Conversation, Message, User  # noqa: F401 — 注册 ORM 到 metadata
+from app.models import (  # noqa: F401 — 注册 ORM 到 metadata
+    AnnualFinancialFact,
+    AnnualFinancialTable,
+    AnnualReportDocument,
+    Conversation,
+    FinancialCompany,
+    FinancialMetric,
+    Message,
+    User,
+)
 
 logger = get_logger(service="init_db")
 
@@ -27,7 +36,7 @@ async def init_db(reset: bool = False) -> None:
             if reset:
                 logger.warning("Dropping all tables...")
                 await conn.run_sync(Base.metadata.drop_all)
-            logger.info("Creating tables: users, conversations, messages, annual_financial_facts")
+            logger.info("Creating application and normalized financial fact tables")
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database initialization completed.")
     except Exception as e:

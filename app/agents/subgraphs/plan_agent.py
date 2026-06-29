@@ -1,4 +1,4 @@
-"""Plan Agent 子图：planner → fanout → [faq_agent | pdf_agent] → summarize → END。
+"""Plan Agent 子图：planner → fanout → [faq_agent | pdf_agent | db_agent] → summarize → END。
 
 作为独立 Agent 编译，主图只需 add_node("plan_agent", plan_agent)。
 后续迁移到 Supervisor 框架时，整个子图作为单个 Agent 注册。
@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from app.agents.states import FinAgentInput, FinAgentState, SubTask
+from app.agents.subgraphs.db_agent import db_agent
 from app.agents.subgraphs.faq import faq_agent
 from app.agents.subgraphs.pdf import pdf_agent
 from app.agents.subgraphs.planner import planner_node
@@ -62,22 +63,31 @@ def _fanout_from_planner(state: FinAgentState) -> list[Send]:
                     {"sub_question": task.question, "sub_task_id": task.id},
                 )
             )
+        elif task.type == "db":
+            sends.append(
+                Send(
+                    "db_agent",
+                    {"sub_question": task.question, "sub_task_id": task.id},
+                )
+            )
     return sends
 
 
 def _build_plan_agent_subgraph() -> StateGraph:
-    """构建 plan agent 子图：planner → fanout → [faq | pdf] → summarize → END"""
+    """构建 plan agent 子图：planner → fanout → [faq | pdf | db] → summarize → END"""
     builder = StateGraph(FinAgentState, input_schema=FinAgentInput)
 
     builder.add_node("planner", planner_node)
     builder.add_node("faq_agent", faq_agent)
     builder.add_node("pdf_agent", pdf_agent)
+    builder.add_node("db_agent", db_agent)
     builder.add_node("summarize", summarize_node)
 
     builder.add_edge(START, "planner")
     builder.add_conditional_edges("planner", _fanout_from_planner)
     builder.add_edge("faq_agent", "summarize")
     builder.add_edge("pdf_agent", "summarize")
+    builder.add_edge("db_agent", "summarize")
     builder.add_edge("summarize", END)
 
     return builder

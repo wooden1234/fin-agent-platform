@@ -34,7 +34,7 @@ class Router(BaseModel):
 
 
 # ---------- Planner 多意图拆分 ----------
-SubTaskType = Literal["faq", "pdf", "general"]
+SubTaskType = Literal["faq", "pdf", "db", "general"]
 
 class SubTask(BaseModel):
     """单个子任务 — Planner 分解产物"""
@@ -42,7 +42,7 @@ class SubTask(BaseModel):
     question: str = Field(description="独立的子问题，可直接检索")
     type: SubTaskType = Field(
         default="faq",
-        description="faq=知识库 / pdf=文档库 / general=无需检索"
+        description="faq=知识库 / pdf=文档库 / db=结构化财务数据库 / general=无需检索"
     )
 
 
