@@ -3,7 +3,11 @@
 from decimal import Decimal
 from types import SimpleNamespace
 
-from app.services.financial_fact_service import FinancialFactQuery, FinancialFactService
+from app.services.financial import (
+    FinancialFactQuery,
+    FinancialFactService,
+    FinancialSqlResultRow,
+)
 
 
 def _fact(**kwargs):
@@ -26,8 +30,13 @@ def _fact(**kwargs):
 
 
 def test_resolve_company_terms_aliases():
-    assert FinancialFactService.resolve_company_terms("宁德时代") == ["CATL"]
-    assert FinancialFactService.resolve_company_terms("腾讯") == ["Tencent"]
+    catl_terms = FinancialFactService.resolve_company_terms("宁德时代")
+    tencent_terms = FinancialFactService.resolve_company_terms("腾讯")
+
+    assert catl_terms[0] == "CATL"
+    assert "宁德时代" in catl_terms
+    assert tencent_terms[0] == "Tencent"
+    assert "腾讯" in tencent_terms
 
 
 def test_resolve_metric_terms_aliases():
@@ -51,6 +60,40 @@ def test_format_answer_empty():
 def test_to_citations():
     citations = FinancialFactService.to_citations([_fact()])
     assert len(citations) == 1
+    assert citations[0]["source"] == "CATL_Annual_Report_2024.pdf"
+    assert citations[0]["page"] == 12
+
+
+def test_format_sql_answer_single_row():
+    row = FinancialSqlResultRow(
+        company_name="宁德时代",
+        fiscal_year=2024,
+        period_year=2024,
+        metric_name="营业收入",
+        raw_value="362,012,554",
+        unit="千元",
+        currency="人民币",
+        source="CATL_Annual_Report_2024.pdf",
+        page_num=12,
+    )
+
+    answer = FinancialFactService.format_sql_answer([row])
+    assert "宁德时代" in answer
+    assert "营业收入" in answer
+    assert "362,012,554" in answer
+
+
+def test_sql_rows_to_citations():
+    row = FinancialSqlResultRow(
+        company_name="宁德时代",
+        metric_name="营业收入",
+        raw_value="362,012,554",
+        unit="千元",
+        source="CATL_Annual_Report_2024.pdf",
+        page_num=12,
+    )
+
+    citations = FinancialFactService.sql_rows_to_citations([row])
     assert citations[0]["source"] == "CATL_Annual_Report_2024.pdf"
     assert citations[0]["page"] == 12
 

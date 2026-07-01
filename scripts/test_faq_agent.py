@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
-from app.agents.subgraphs.faq import faq_agent  # noqa: E402
+from app.agents.components.finance_agent.faq_agent import faq_agent  # noqa: E402
 
 SAMPLE_QUERIES = [
     "什么是 T+1 交易制度？",

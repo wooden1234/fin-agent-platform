@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage
 
-from app.agents.subgraphs.pdf import pdf_agent
+from app.agents.components.finance_agent.pdf_agent import pdf_agent
 from app.retrieval import RetrievalHit
 
 
@@ -37,7 +37,7 @@ async def test_pdf_agent_no_hits_returns_no_context():
     mock_retriever = MagicMock()
     mock_retriever.search.return_value = []
 
-    with patch("app.agents.subgraphs.pdf.get_pdf_retriever", return_value=mock_retriever):
+    with patch("app.agents.components.finance_agent.pdf_agent.node.get_pdf_retriever", return_value=mock_retriever):
         out = await pdf_agent({"messages": [HumanMessage(content="查年报收入")]}, {})
 
     assert "PDF 文档库中暂未找到" in out["messages"][0].content
@@ -49,7 +49,7 @@ async def test_pdf_agent_low_score_returns_no_context():
     mock_retriever = MagicMock()
     mock_retriever.search.return_value = [_hit("x", score=0.1)]
 
-    with patch("app.agents.subgraphs.pdf.get_pdf_retriever", return_value=mock_retriever):
+    with patch("app.agents.components.finance_agent.pdf_agent.node.get_pdf_retriever", return_value=mock_retriever):
         out = await pdf_agent({"messages": [HumanMessage(content="低分问题")]}, {})
 
     assert out["citations"] == []
@@ -65,8 +65,8 @@ async def test_pdf_agent_with_hits_calls_llm_and_returns_page_citation():
     mock_llm.astream.return_value = _chunks("营业收入", "同比增长 [1]")
 
     with (
-        patch("app.agents.subgraphs.pdf.get_pdf_retriever", return_value=mock_retriever),
-        patch("app.agents.subgraphs.pdf.get_pdf_llm", return_value=mock_llm),
+        patch("app.agents.components.finance_agent.pdf_agent.node.get_pdf_retriever", return_value=mock_retriever),
+        patch("app.agents.components.finance_agent.pdf_agent.node.get_pdf_llm", return_value=mock_llm),
     ):
         out = await pdf_agent({"messages": [HumanMessage(content="年报如何描述收入变化？")]}, {})
 

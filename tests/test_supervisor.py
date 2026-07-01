@@ -4,7 +4,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from app.agents.states import FinAgentState
-from app.agents.supervisor import analyze_and_route_query, route_query
+from app.agents.components.supervisor import analyze_and_route_query, route_query
 from tests.conftest import requires_llm_key
 
 

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from operator import add
-from typing import Annotated, Literal, NotRequired, TypedDict
+from typing import Any, Annotated, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
 from pydantic import BaseModel, Field
+from app.services.financial.query_router import FinancialQueryTemplate
+from app.services.financial.schemas import FinancialQueryIntent
 
 # ---------- 与前端 / SSE 对齐 ----------
 AgentRoute = Literal["faq", "pdf", "account", "general", "plan"]
@@ -34,7 +36,8 @@ class Router(BaseModel):
 
 
 # ---------- Planner 多意图拆分 ----------
-SubTaskType = Literal["faq", "pdf", "db", "general"]
+SubTaskType = Literal["faq", "pdf", "financial_query", "general"]
+
 
 class SubTask(BaseModel):
     """单个子任务 — Planner 分解产物"""
@@ -42,7 +45,10 @@ class SubTask(BaseModel):
     question: str = Field(description="独立的子问题，可直接检索")
     type: SubTaskType = Field(
         default="faq",
-        description="faq=知识库 / pdf=文档库 / db=结构化财务数据库 / general=无需检索"
+        description=(
+            "faq=知识库 / pdf=文档库 / financial_query=结构化财务查询 / "
+            "general=无需检索"
+        ),
     )
 
 
@@ -82,6 +88,19 @@ class FinAgentState(TypedDict):
 
     # Planner 多意图
     sub_tasks: NotRequired[list[SubTask]]                     # Planner → fanout 边读取
+    sub_question: NotRequired[str]
+    sub_task_id: NotRequired[str]
+
+    # financial_query 子图内部状态
+    financial_query_text: NotRequired[str]
+    financial_query_intent: NotRequired[FinancialQueryIntent]
+    financial_query_route: NotRequired[str]
+    financial_query_template: NotRequired[FinancialQueryTemplate | None]
+    financial_query_missing_fields: NotRequired[list[str]]
+    financial_query_route_reason: NotRequired[str]
+    financial_query_sql: NotRequired[str]
+    financial_query_sql_params: NotRequired[dict[str, Any]]
+    financial_query_template_id: NotRequired[str | None]
 
     # Worker 并行写入（add reducer 自动归并）
     task_results: NotRequired[Annotated[list[TaskResult], add]]  # 🆕

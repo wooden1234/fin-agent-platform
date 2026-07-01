@@ -14,9 +14,10 @@ class DialogueType(enum.Enum):
 
 class Conversation(Base):
     __tablename__ = "conversations"
-    
+    __table_args__ = {"schema": "app"}
+
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
+    user_id = Column(Integer, ForeignKey("app.users.id", ondelete="CASCADE"))
     title = Column(String(100), nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -25,4 +26,4 @@ class Conversation(Base):
     
     # 关系
     user = relationship("User", back_populates="conversations")
-    messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan") 
+    messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")

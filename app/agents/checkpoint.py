@@ -34,10 +34,12 @@ def normalize_checkpoint_dsn(url: str) -> str:
 
 
 def checkpoint_dsn() -> str:
+    # checkpoint 允许使用独立 DSN，这样可单独指定 runtime schema 的 search_path。
     raw = settings.LANGGRAPH_CHECKPOINT_URL or settings.PGVECTOR_DATABASE_URL
     if not raw:
         raise RuntimeError(
-            "未配置 LANGGRAPH_CHECKPOINT_URL 或 PGVECTOR_DATABASE_URL，无法启用 PostgresSaver"
+            "未配置 LANGGRAPH_CHECKPOINT_URL 或 PGVECTOR_DATABASE_URL，无法启用 PostgresSaver；"
+            "推荐单独配置 LANGGRAPH_CHECKPOINT_URL 并带 search_path=runtime"
         )
     return normalize_checkpoint_dsn(raw)
 

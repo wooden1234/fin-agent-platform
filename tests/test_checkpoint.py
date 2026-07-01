@@ -12,7 +12,7 @@ from app.agents.checkpoint import (
     make_thread_config,
     normalize_checkpoint_dsn,
 )
-from app.agents.graph import get_graph, get_graph_with_memory, reset_graph_cache
+from app.agents.graph import get_graph, reset_graph_cache
 
 
 def test_normalize_checkpoint_dsn():
@@ -35,16 +35,29 @@ async def test_multiturn_messages_accumulate_memory_backend():
 
     async def mock_supervisor(state, config):
         history = list(state.get("messages") or [])
-        return {"route": "faq", "logic": f"n={len(history)}", "risk_level": "L1"}
+        return {"route": "general", "logic": f"n={len(history)}"}
 
-    async def mock_faq(state, config):
+    async def mock_general(state, config):
         n = len(state.get("messages") or [])
-        return {"messages": [AIMessage(content=f"seen={n}")], "citations": []}
+        return {"messages": [AIMessage(content=f"seen={n}")]}
+
+    async def mock_guardrails(state, config):
+        return {"guardrails_pass": True}
+
+    async def mock_compress(state, config):
+        return {}
+
+    async def mock_final(state, config):
+        return {"citations": [], "summary": ""}
 
     with (
         patch("app.agents.graph.analyze_and_route_query", mock_supervisor),
-        patch("app.agents.graph.faq_agent", mock_faq),
+        patch("app.agents.graph.guardrails_node", mock_guardrails),
+        patch("app.agents.graph.compress_context", mock_compress),
+        patch("app.agents.graph.general_agent", mock_general),
+        patch("app.agents.graph.final_answer_node", mock_final),
     ):
+        reset_graph_cache()
         await init_checkpoint(backend="memory")
         graph = get_graph()
         thread = f"mem-{uuid.uuid4()}"
@@ -79,16 +92,29 @@ async def test_multiturn_messages_accumulate_postgres_backend():
     reset_graph_cache()
 
     async def mock_supervisor(state, config):
-        return {"route": "faq", "logic": "ok", "risk_level": "L1"}
+        return {"route": "general", "logic": "ok"}
 
-    async def mock_faq(state, config):
+    async def mock_general(state, config):
         n = len(state.get("messages") or [])
-        return {"messages": [AIMessage(content=f"pg-seen={n}")], "citations": []}
+        return {"messages": [AIMessage(content=f"pg-seen={n}")]}
+
+    async def mock_guardrails(state, config):
+        return {"guardrails_pass": True}
+
+    async def mock_compress(state, config):
+        return {}
+
+    async def mock_final(state, config):
+        return {"citations": [], "summary": ""}
 
     with (
         patch("app.agents.graph.analyze_and_route_query", mock_supervisor),
-        patch("app.agents.graph.faq_agent", mock_faq),
+        patch("app.agents.graph.guardrails_node", mock_guardrails),
+        patch("app.agents.graph.compress_context", mock_compress),
+        patch("app.agents.graph.general_agent", mock_general),
+        patch("app.agents.graph.final_answer_node", mock_final),
     ):
+        reset_graph_cache()
         await init_checkpoint(backend="postgres")
         graph = get_graph()
         thread = f"pg-{uuid.uuid4()}"

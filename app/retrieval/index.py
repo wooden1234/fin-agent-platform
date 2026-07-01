@@ -14,6 +14,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(ROOT_DIR / ".env", override=False)
 
 EMBED_DIM = int(os.getenv("EMBEDDING_DIM", "1536"))
+VECTOR_SCHEMA = "rag"
 
 # 兼容旧代码：FAQ 集合表名
 TABLE_NAME = get_table_name("faq")
@@ -47,7 +48,7 @@ def get_vector_store(
         async_connection_string=async_url,
         table_name=resolved,
         embed_dim=EMBED_DIM,
-        schema_name="public",
+        schema_name=VECTOR_SCHEMA,
         perform_setup=True,
     )
     if rebuild:

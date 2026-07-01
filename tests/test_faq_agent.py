@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage
 
-from app.agents.subgraphs.faq import faq_agent
+from app.agents.components.finance_agent.faq_agent import faq_agent
 from app.retrieval import RetrievalHit
 
 
@@ -27,7 +27,7 @@ async def test_faq_agent_no_hits_returns_no_context():
     mock_retriever = MagicMock()
     mock_retriever.search.return_value = []
 
-    with patch("app.agents.subgraphs.faq.get_faq_retriever", return_value=mock_retriever):
+    with patch("app.agents.components.finance_agent.faq_agent.node.get_faq_retriever", return_value=mock_retriever):
         out = await faq_agent({"messages": [HumanMessage(content="未知问题")]}, {})
 
     assert "暂未找到" in out["messages"][0].content
@@ -39,7 +39,7 @@ async def test_faq_agent_low_score_returns_no_context():
     mock_retriever = MagicMock()
     mock_retriever.search.return_value = [_hit("x", score=0.1)]
 
-    with patch("app.agents.subgraphs.faq.get_faq_retriever", return_value=mock_retriever):
+    with patch("app.agents.components.finance_agent.faq_agent.node.get_faq_retriever", return_value=mock_retriever):
         out = await faq_agent({"messages": [HumanMessage(content="低分问题")]}, {})
 
     assert out["citations"] == []
@@ -55,8 +55,8 @@ async def test_faq_agent_with_hits_calls_llm():
     mock_llm.astream.return_value = _chunks("T+1 ", "制度说明 [1]")
 
     with (
-        patch("app.agents.subgraphs.faq.get_faq_retriever", return_value=mock_retriever),
-        patch("app.agents.subgraphs.faq.get_faq_llm", return_value=mock_llm),
+        patch("app.agents.components.finance_agent.faq_agent.node.get_faq_retriever", return_value=mock_retriever),
+        patch("app.agents.components.finance_agent.faq_agent.node.get_faq_llm", return_value=mock_llm),
     ):
         out = await faq_agent({"messages": [HumanMessage(content="什么是 T+1？")]}, {})
 
