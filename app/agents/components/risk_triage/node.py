@@ -69,7 +69,4 @@ def risk_triage_edge(state: FinAgentState) -> str:
     """条件边：L4 → END（已回复安抚话术），其他 → 继续"""
     if state.get("risk_needs_human", False):
         return "__end__"
-    route = state.get("route", "plan")
-    if route == "general":
-        return "general_agent"
     return "plan_agent"

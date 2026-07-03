@@ -161,7 +161,7 @@ class FinancialSqlResultRow(BaseModel):
 class GeneratedFinancialSql(BaseModel):
     """复杂查询生成的只读 SQL。"""
 
-    sql: str = Field(description="只读 SELECT SQL，必须是单条语句。")
+    sql: str = Field(default="", description="只读 SELECT SQL，必须是单条语句。")
     params: dict[str, Any] = Field(
         default_factory=dict,
         description="SQL 命名参数。",
@@ -170,7 +170,7 @@ class GeneratedFinancialSql(BaseModel):
         default="",
         description="简述 SQL 的查询思路与口径。",
     )
-    route: Literal["execute", "clarify"] = Field(
+    route: Literal["execute", "clarify", "sql"] = Field(
         default="execute",
         description="若信息不足则要求补充，否则执行 SQL。",
     )

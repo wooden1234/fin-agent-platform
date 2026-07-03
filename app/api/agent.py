@@ -19,6 +19,37 @@ def _sse(payload: dict) -> str:
     """格式化为 SSE 行：data: {...}\\n\\n"""
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+
+def _extract_incremental_text(previous_content: str, current_content: str) -> str:
+    """提取本次流式事件相对已发送内容的新增部分。"""
+    if not current_content:
+        return ""
+    if not previous_content:
+        return current_content
+    if current_content == previous_content:
+        return ""
+    if current_content.startswith(previous_content):
+        return current_content[len(previous_content):]
+    if previous_content.startswith(current_content):
+        return ""
+
+    max_overlap = min(len(previous_content), len(current_content))
+    for overlap in range(max_overlap, 0, -1):
+        if previous_content.endswith(current_content[:overlap]):
+            return current_content[overlap:]
+    return current_content
+
+
+def _extract_final_response(values: dict) -> str:
+    """从图状态中提取最终可展示的回答文本。"""
+    for msg in reversed(list(values.get("messages") or [])):
+        if isinstance(msg, AIMessage):
+            return msg.content if isinstance(msg.content, str) else str(msg.content)
+    summary = values.get("summary")
+    if isinstance(summary, str):
+        return summary
+    return ""
+
 @router.get("/health")
 async def agent_health(current_user: User = Depends(get_current_user)):
     """W3 前占位：验证 Agent 路由走 JWT"""
@@ -52,13 +83,28 @@ async def agent_query(
                 if not isinstance(msg, AIMessage):
                     continue
                 content = msg.content if isinstance(msg.content, str) else str(msg.content)
-                assistant_full_response += content
-                yield _sse({"type": "token", "content": content})
+                incremental_content = _extract_incremental_text(
+                    assistant_full_response,
+                    content,
+                )
+                if not incremental_content:
+                    continue
+                assistant_full_response += incremental_content
+                yield _sse({"type": "token", "content": incremental_content})
             
             state = await graph.aget_state(thread_config)
             values = (state.values if state else {}) or {}
             citations = values.get("citations") or []
-            yield _sse({"type": "done", "citations": citations})
+            final_response = _extract_final_response(values)
+            if not assistant_full_response and final_response:
+                assistant_full_response = final_response
+            yield _sse({
+                "type": "done",
+                "content": final_response,
+                "citations": citations,
+                "route": values.get("route"),
+                "risk_level": values.get("risk_level"),
+            })
 
             # 持久化消息到数据库
             if conversation_id and assistant_full_response:

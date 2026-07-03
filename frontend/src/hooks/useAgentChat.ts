@@ -64,9 +64,19 @@ export function useAgentChat() {
       }
 
       if (event.type === 'done') {
+        if (!assistantMessageId && event.content) {
+          assistantMessageId = `assistant-${Date.now()}`
+          contentBuffer = event.content
+          addMessage({
+            id: assistantMessageId,
+            role: 'assistant',
+            content: contentBuffer,
+            timestamp: Date.now(),
+          })
+        }
         if (assistantMessageId) {
           updateMessage(assistantMessageId, {
-            content: contentBuffer,
+            content: contentBuffer || event.content || '',
             citations: event.citations,
             route: event.route,
             riskLevel: event.risk_level,

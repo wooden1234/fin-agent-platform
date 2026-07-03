@@ -52,6 +52,7 @@ async def _generate_sql(
         )
     except Exception:
         logger.exception("text_to_sql_agent sql generation failed")
+        fallback.route = "clarify"
         return fallback
 
 
@@ -65,7 +66,7 @@ async def text_to_sql_agent(
 
     question = str(state.get("financial_query_text") or query_from_state(state))
     generated = await _generate_sql(question, intent, config)
-    if generated.route == "clarify":
+    if generated.route in ("clarify",):
         answer = "请补充更明确的公司名称、财务指标或统计年份后，我再继续生成查询。"
         return {
             **financial_query_output(state, answer=answer, step="text_to_sql_agent"),

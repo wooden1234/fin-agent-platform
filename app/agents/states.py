@@ -1,118 +1,80 @@
-"""LangGraph 状态与 Supervisor 路由模型（Week 3）。"""
+"""LangGraph 共享状态：FinAgentState 由各领域 mixin 组合而成。
+
+所有类型均通过本模块重导出，现有 `from app.agents.states import ...` 零改动。
+实际定义分散在各组件文件夹的 state.py / models.py 中。
+"""
 
 from __future__ import annotations
 
-from operator import add
-from typing import Any, Annotated, Literal, NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
-from pydantic import BaseModel, Field
-from app.services.financial.query_router import FinancialQueryTemplate
-from app.services.financial.schemas import FinancialQueryIntent
+from typing import Annotated
 
-# ---------- 与前端 / SSE 对齐 ----------
-AgentRoute = Literal["faq", "pdf", "account", "general", "plan"]
-RiskLevel = Literal["L1", "L2", "L3", "L4"]
+# ─── 共享类型 ───
+from app.shared import (
+    AgentRoute,
+    Citation,
+    CoreState,
+    RiskLevel,
+    TaskResult,
+)
 
+# ─── 各领域 State Mixin ───
+from app.state_mixins import (
+    FinancialQueryState,
+    GuardrailsState,
+    PlannerState,
+    RiskTriageState,
+    SupervisorState,
+    WorkerOutputState,
+)
 
-class Citation(TypedDict, total=False):
-    """检索引用；FAQ 节点写入，SSE done 带回前端。"""
-    source: str
-    snippet: str
-    page: int
-
-
-# ---------- Supervisor 结构化输出（with_structured_output）----------
-class Router(BaseModel):
-    """Supervisor 对用户问题的分类结果：general（闲聊）还是 plan（RAG）。"""
-
-    type: Literal["general", "plan"] = Field(
-        description="general=闲聊/泛化/回溯对话；plan=需要检索知识库或文档"
-    )
-    logic: str = Field(
-        description="一两句话说明为何选该路由"
-    )
+# ─── 各领域 Pydantic 模型（重导出，保持向后兼容）───
+from app.shared import PlannerOutput, Router, SubTask, SubTaskType
 
 
-# ---------- Planner 多意图拆分 ----------
-SubTaskType = Literal["faq", "pdf", "financial_query", "general"]
+# ─── 组合：FinAgentState ───
+class FinAgentState(
+    CoreState,
+    SupervisorState,
+    RiskTriageState,
+    GuardrailsState,
+    PlannerState,
+    FinancialQueryState,
+    WorkerOutputState,
+):
+    """主图全局状态。
+
+    通过 TypedDict 多重继承，将各组件领域字段组合到一个类型中。
+    各 mixin 独立定义在自己组件的 state.py 里，本文件只做组合 + 重导出。
+    """
+    pass
 
 
-class SubTask(BaseModel):
-    """单个子任务 — Planner 分解产物"""
-    id: str = Field(default="", description="子任务唯一标识，用于结果匹配")
-    question: str = Field(description="独立的子问题，可直接检索")
-    type: SubTaskType = Field(
-        default="faq",
-        description=(
-            "faq=知识库 / pdf=文档库 / financial_query=结构化财务查询 / "
-            "general=无需检索"
-        ),
-    )
-
-
-class PlannerOutput(BaseModel):
-    """Planner 的 LLM 结构化输出"""
-    tasks: list[SubTask] = Field(
-        default=[],
-        description="子任务列表；简单问题返回空列表"
-    )
-
-
-class TaskResult(TypedDict, total=False):
-    """单个子任务的 Worker 返回结果"""
-    sub_task_id: str
-    question: str
-    type: SubTaskType
-    context: str              # 检索到的上下文原文
-    citations: list[Citation]  # 引用
-
-
-# ---------- 增强后的 FinAgentState ----------
-class FinAgentState(TypedDict):
-    messages: Annotated[list[AnyMessage], add_messages]
-
-    # Supervisor（不变）
-    route: NotRequired[AgentRoute]
-    logic: NotRequired[str]
-
-    # 风险（拆到 risk_triage）
-    risk_level: NotRequired[RiskLevel]
-    risk_reason: NotRequired[str]
-    risk_needs_human: NotRequired[bool]
-
-    # Guardrails
-    guardrails_pass: NotRequired[bool]
-    guardrails_reason: NotRequired[str]
-
-    # Planner 多意图
-    sub_tasks: NotRequired[list[SubTask]]                     # Planner → fanout 边读取
-    sub_question: NotRequired[str]
-    sub_task_id: NotRequired[str]
-
-    # financial_query 子图内部状态
-    financial_query_text: NotRequired[str]
-    financial_query_intent: NotRequired[FinancialQueryIntent]
-    financial_query_route: NotRequired[str]
-    financial_query_template: NotRequired[FinancialQueryTemplate | None]
-    financial_query_missing_fields: NotRequired[list[str]]
-    financial_query_route_reason: NotRequired[str]
-    financial_query_sql: NotRequired[str]
-    financial_query_sql_params: NotRequired[dict[str, Any]]
-    financial_query_template_id: NotRequired[str | None]
-
-    # Worker 并行写入（add reducer 自动归并）
-    task_results: NotRequired[Annotated[list[TaskResult], add]]  # 🆕
-    citations: NotRequired[Annotated[list[Citation], add]]       # 🔧 从 NotRequired[list] 改为 add
-
-    # Summarize
-    summary: NotRequired[str]
-
-    # 调试追踪
-    steps: NotRequired[Annotated[list[str], add]]
-
-
-# 可选：入口更窄，只暴露 messages（compile 时 input=FinAgentInput）
+# ─── 入口更窄 ───
 class FinAgentInput(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
+
+
+# ─── 重导出（所有类型仍可从 app.agents.states import）───
+__all__ = [
+    "AgentRoute",
+    "Citation",
+    "CoreState",
+    "FinAgentInput",
+    "FinAgentState",
+    "FinancialQueryState",
+    "GuardrailsState",
+    "PlannerOutput",
+    "PlannerState",
+    "RiskLevel",
+    "RiskTriageState",
+    "Router",
+    "SubTask",
+    "SubTaskType",
+    "SupervisorState",
+    "TaskResult",
+    "WorkerOutputState",
+]

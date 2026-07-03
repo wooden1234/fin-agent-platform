@@ -15,21 +15,6 @@ conda run -n agent python -m py_compile <changed-python-files>
 conda run -n agent python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-## 架构边界
-
-- `app/agents` 只放图编排、路由、Agent 节点、Agent prompt，以及未来 Agent 可直接调用的外部工具。
-- `app/services/financial` 放金融查询领域逻辑，例如实体解析、模板路由、模糊事实检索、text-to-SQL。
-- 天气、联网搜索、计算器属于 Agent 外部工具层；按需放到未来 `app/agents/tools/`。
-- 模板查询、模糊事实检索、text-to-SQL 是金融查询内部策略，不要注册成 Agent 外部工具。
-- `plan_agent` 只路由到 agent / subgraph，不直接处理 service executor 细节。
-
-## 当前命名约定
-
-- 新代码优先使用 `financial_query_agent` 和任务类型 `financial_query`。
-- `db_agent` 和任务类型 `db` 只作为历史兼容保留，不要在新代码里继续扩散。
-- 新代码优先从 `app.services.financial` 导入金融查询对象。
-- `app.services.financial_fact_service`、`app.services.financial_entity_resolver` 是历史兼容入口。
-
 ## 修改原则
 
 - 优先小 diff，不做无关重构。

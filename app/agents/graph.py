@@ -1,4 +1,4 @@
-"""主图编译：START → guardrails → context_compressor → supervisor → risk_triage → [general_agent | plan_agent] → final_answer → END。
+"""主图编译：START → guardrails → context_compressor → supervisor → risk_triage → plan_agent → final_answer → END。
 
 plan_agent 作为独立子图（planner → supervisor → [faq | pdf | financial_query_agent] → summarize），主图只感知一个节点。
 """
@@ -17,8 +17,8 @@ from app.agents.components import (
     risk_triage_node, risk_triage_edge,
     general_agent,
     final_answer_node,
-    finance_agent,
 )
+from app.agents.components.finance_agent import finance_agent as _finance_agent_graph
 
 _compiled_graph = None
 
@@ -32,7 +32,7 @@ def build_graph() -> StateGraph:
     builder.add_node("supervisor", analyze_and_route_query)
     builder.add_node("risk_triage", risk_triage_node)
     builder.add_node("general_agent", general_agent)
-    builder.add_node("plan_agent", finance_agent)
+    builder.add_node("plan_agent", _finance_agent_graph)
     builder.add_node("final_answer", final_answer_node)
 
     # Layer 1: START → guardrails
@@ -58,12 +58,11 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # Layer 3: risk_triage → general / plan_agent / END
+    # Layer 3: risk_triage → plan_agent / END
     builder.add_conditional_edges(
         "risk_triage",
         risk_triage_edge,
         {
-            "general_agent": "general_agent",
             "plan_agent": "plan_agent",
             "__end__": END,
         },

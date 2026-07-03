@@ -8,8 +8,8 @@ from app.agents.components import (
     risk_triage_node, risk_triage_edge,
     general_agent,
     final_answer_node,
-    finance_agent,
 )
+from app.agents.components.finance_agent import finance_agent
 
 __all__ = [
     "FinAgentInput",

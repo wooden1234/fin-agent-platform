@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from app.agents.states import RiskLevel
+from app.shared import RiskLevel
 
 
 class RiskAssessment(BaseModel):

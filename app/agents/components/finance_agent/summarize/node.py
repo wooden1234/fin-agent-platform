@@ -29,6 +29,14 @@ async def summarize_node(
     task_results: list[TaskResult] = state.get("task_results", [])
     risk_level = state.get("risk_level", "L1")
 
+    # 仅保留当前轮次子任务的结果（sub_tasks 不跨轮累积，用其 ID 过滤）
+    current_ids = {t.id for t in (state.get("sub_tasks") or []) if t.id}
+    if current_ids:
+        before = len(task_results)
+        task_results = [tr for tr in task_results if tr.get("sub_task_id") in current_ids]
+        if len(task_results) < before:
+            logger.info("summarize filtered {} stale task_result(s)", before - len(task_results))
+
     logger.info("summarize task_results=%d risk_level=%s", len(task_results), risk_level)
 
     if risk_level in ("L3", "L4"):
