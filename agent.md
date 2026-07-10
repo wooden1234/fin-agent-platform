@@ -9,7 +9,7 @@
 - 常用命令：
 
 ```bash
-conda run -n agent python -m pytest tests/test_db_agent.py tests/test_financial_fact_service.py
+conda run -n agent python -m pytest tests/finance_agent/
 conda run -n agent python -m pytest
 conda run -n agent python -m py_compile <changed-python-files>
 conda run -n agent python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000

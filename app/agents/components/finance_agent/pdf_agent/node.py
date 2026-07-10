@@ -37,10 +37,15 @@ def _build_context(hits: list[RetrievalHit]) -> str:
     return "\n\n".join(parts)
 
 
-def _hits_to_citations(hits: list[RetrievalHit]) -> list[Citation]:
+def _hits_to_citations(hits: list[RetrievalHit], *, sub_task_id: str = "") -> list[Citation]:
     citations: list[Citation] = []
     for h in hits:
-        citation: Citation = {"source": h.metadata.get("source", ""), "snippet": (h.text or "")[:200]}
+        citation: Citation = {
+            "source": h.metadata.get("source", ""),
+            "snippet": (h.text or "")[:200],
+            "source_type": "pdf",
+            "sub_task_id": sub_task_id,
+        }
         page = h.metadata.get("page_num") or h.metadata.get("page")
         if isinstance(page, int):
             citation["page"] = page
@@ -66,20 +71,29 @@ async def pdf_agent(
     retriever = get_pdf_retriever(top_k=5, similarity_threshold=None, metadata_filters=metadata_filters, hybrid=True)
     hits = retriever.search(query, top_k=5, metadata_filters=metadata_filters)
 
-    citations = _hits_to_citations(hits) if hits else []
+    citations = _hits_to_citations(hits, sub_task_id=sub_task_id) if hits else []
 
     min_score = settings.PDF_MIN_RELEVANCE_SCORE
     if not hits or hits[0].score < min_score:
         logger.warning("pdf_agent no_context hits={} top1_score={}", len(hits), hits[0].score if hits else None)
         return {
             "messages": [AIMessage(content=PDF_NO_CONTEXT_ANSWER)],
-            "citations": citations,
-            "task_results": [{"sub_task_id": sub_task_id, "question": query, "type": "pdf", "context": "（未找到相关文档条目）"}],
+            "citations": [],
+            "task_results": [
+                {
+                    "sub_task_id": sub_task_id,
+                    "question": query,
+                    "type": "pdf",
+                    "context": "（未找到相关文档条目）",
+                    "fallback_to_web": True,
+                    "fallback_reason": "pdf_no_context",
+                }
+            ],
             "steps": ["pdf_agent"],
         }
 
     context = _build_context(hits)
-    citations = _hits_to_citations(hits)
+    citations = _hits_to_citations(hits, sub_task_id=sub_task_id)
 
     history = list(state.get("messages") or [])
     llm_messages = [SystemMessage(content=PDF_SYSTEM_PROMPT.format(context=context)), *history]

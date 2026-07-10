@@ -1,54 +1,77 @@
-"""financial_query_agent：结构化财务事实查询子图。
-
-作为 finance_agent 内部的一个独立子 Agent 图，可独立编译/测试/复用。
-
-⚠️ 惰性加载：避免 state_mixins.py 导入本包下的 state.py 时
-   触发本包的顶层 import → states.py 循环。
-"""
+"""financial_query_agent：结构化财务事实查询子 Agent。"""
 
 from __future__ import annotations
 
-import importlib
+from langchain_core.runnables import RunnableLambda
 
 _BUILT = False
 _financial_query_agent = None
 
 
-def _build_subgraph() -> object:
-    """惰性构建子图，在首次访问 financial_query_agent 时调用。"""
-    from langgraph.graph import END, START, StateGraph
+def _merge_steps(*step_lists: object) -> list[str]:
+    merged: list[str] = []
+    for step_list in step_lists:
+        if not isinstance(step_list, list):
+            continue
+        merged.extend(str(item) for item in step_list)
+    return merged
 
-    from app.agents.states import FinAgentState
-    from app.agents.components.finance_agent.financial_query_agent.common import query_from_state
-    from app.agents.components.finance_agent.financial_query_agent.extract_intent import extract_intent
-    from app.agents.components.finance_agent.financial_query_agent.template_sql import template_sql_agent
-    from app.agents.components.finance_agent.financial_query_agent.text_to_sql import text_to_sql_agent
-    from app.agents.components.finance_agent.financial_query_agent.clarification import clarification_agent
 
-    def route_after_template_sql(state: dict) -> str:
-        route_name = str(state.get("financial_query_route") or "done")
-        if route_name == "clarify":
-            return "clarify"
-        if route_name == "sql":
-            return "sql"
-        return "end"
-
-    builder = StateGraph(FinAgentState)
-    builder.add_node("extract_intent", extract_intent)
-    builder.add_node("template_sql_agent", template_sql_agent)
-    builder.add_node("clarify", clarification_agent)
-    builder.add_node("sql", text_to_sql_agent)
-    builder.add_edge(START, "extract_intent")
-    builder.add_edge("extract_intent", "template_sql_agent")
-    builder.add_conditional_edges(
-        "template_sql_agent",
-        route_after_template_sql,
-        {"clarify": "clarify", "sql": "sql", "end": END},
+async def _run_financial_query_agent(state, config=None):
+    """按 planner 结果分发到 predefined 或 text_to_sql。"""
+    from app.agents.components.finance_agent.financial_query_agent.planner import (
+        financial_query_planner,
     )
-    builder.add_edge("clarify", END)
-    builder.add_edge("sql", END)
+    from app.agents.components.finance_agent.financial_query_agent.workflows import (
+        predefined_workflow,
+        text_to_sql_workflow,
+    )
 
-    return builder.compile()
+    planner_updates = await financial_query_planner(state, config)
+    route_name = str(planner_updates.get("financial_query_plan_route") or "")
+    merged_state = {**state, **planner_updates}
+
+    if route_name == "predefined":
+        predefined_updates = await predefined_workflow(merged_state, config)
+        if str(predefined_updates.get("financial_query_plan_route") or "") == "text_to_sql":
+            fallback_state = {**merged_state, **predefined_updates}
+            text_to_sql_updates = await text_to_sql_workflow(fallback_state, config)
+            return {
+                **planner_updates,
+                **predefined_updates,
+                **text_to_sql_updates,
+                "steps": _merge_steps(
+                    planner_updates.get("steps"),
+                    predefined_updates.get("steps"),
+                    text_to_sql_updates.get("steps"),
+                ),
+            }
+        return {
+            **planner_updates,
+            **predefined_updates,
+            "steps": _merge_steps(
+                planner_updates.get("steps"),
+                predefined_updates.get("steps"),
+            ),
+        }
+
+    if route_name == "text_to_sql":
+        text_to_sql_updates = await text_to_sql_workflow(merged_state, config)
+        return {
+            **planner_updates,
+            **text_to_sql_updates,
+            "steps": _merge_steps(
+                planner_updates.get("steps"),
+                text_to_sql_updates.get("steps"),
+            ),
+        }
+
+    return planner_updates
+
+
+def _build_subgraph() -> object:
+    """惰性构建 runnable，在首次访问时组装。"""
+    return RunnableLambda(_run_financial_query_agent)
 
 
 def __getattr__(name):
@@ -64,14 +87,3 @@ def __getattr__(name):
 
 
 __all__ = ["financial_query_agent"]
-
-
-__all__ = [
-    "_extract_query_params",
-    "clarification_agent",
-    "extract_intent",
-    "financial_query_agent",
-    "route_after_template_sql",
-    "template_sql_agent",
-    "text_to_sql_agent",
-]

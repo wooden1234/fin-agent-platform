@@ -10,11 +10,20 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from app.core.config import settings
 from app.core.logger import get_logger
 
-# 允许 msgpack 反序列化 SubTask 等 Pydantic 模型
+# 允许 msgpack 反序列化项目内 Pydantic 状态模型（消除 checkpoint warning）。
+# SAFE_MSGPACK_TYPES（messages / datetime 等）仍由 LangGraph 内置放行。
+_CHECKPOINT_ALLOWED_MSGPACK_MODULES = (
+    ("app.shared", "SubTask"),
+    ("app.shared", "PlannerOutput"),
+    ("app.agents.components.finance_agent.financial_query_agent.predefined.intent", "FinancialQueryIntent"),
+)
+
+# 兼容旧环境变量；未显式登记的类型在 strict 模式下会被拒绝。
 os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "false")
 
 logger = get_logger(service="checkpoint")
@@ -49,6 +58,12 @@ def make_thread_config(conversation_id: str | int) -> RunnableConfig:
     return {"configurable": {"thread_id": str(conversation_id)}}
 
 
+def _make_checkpoint_serde() -> JsonPlusSerializer:
+    return JsonPlusSerializer(
+        allowed_msgpack_modules=_CHECKPOINT_ALLOWED_MSGPACK_MODULES,
+    )
+
+
 async def init_checkpoint(
     backend: CheckpointBackend | None = None,
 ) -> BaseCheckpointSaver:
@@ -61,13 +76,16 @@ async def init_checkpoint(
     chosen: CheckpointBackend = backend or settings.AGENT_CHECKPOINT_BACKEND  # type: ignore[assignment]
 
     if chosen == "memory":
-        _checkpointer = MemorySaver()
+        _checkpointer = MemorySaver(serde=_make_checkpoint_serde())
         logger.info("Agent checkpoint backend=memory")
         return _checkpointer
 
     _exit_stack = AsyncExitStack()
     saver = await _exit_stack.enter_async_context(
-        AsyncPostgresSaver.from_conn_string(checkpoint_dsn())
+        AsyncPostgresSaver.from_conn_string(
+            checkpoint_dsn(),
+            serde=_make_checkpoint_serde(),
+        )
     )
     await saver.setup()
     _checkpointer = saver

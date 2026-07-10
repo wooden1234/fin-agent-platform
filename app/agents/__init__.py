@@ -6,9 +6,9 @@ from app.agents.components import (
     compress_context,
     analyze_and_route_query, route_query,
     risk_triage_node, risk_triage_edge,
-    general_agent,
     final_answer_node,
 )
+from app.agents.components.general_agent.node import general_agent
 from app.agents.components.finance_agent import finance_agent
 
 __all__ = [

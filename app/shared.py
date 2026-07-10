@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 # ---------- 共享类型别名 ----------
 AgentRoute = Literal["faq", "pdf", "account", "general", "plan"]
 RiskLevel = Literal["L1", "L2", "L3", "L4"]
-SubTaskType = Literal["faq", "pdf", "financial_query", "general"]
+SubTaskType = Literal["faq", "pdf", "financial_query", "web_search", "general"]
 
 
 # ---------- 共享 TypedDict ----------
@@ -25,6 +25,11 @@ class Citation(TypedDict, total=False):
     source: str
     snippet: str
     page: int
+    url: str
+    title: str
+    published_at: str
+    source_type: str
+    sub_task_id: str
 
 
 class TaskResult(TypedDict, total=False):
@@ -34,6 +39,8 @@ class TaskResult(TypedDict, total=False):
     type: str              # SubTaskType，松散字符串避免跨模块耦合
     context: str           # 检索到的上下文原文
     citations: list[Citation]
+    fallback_to_web: bool
+    fallback_reason: str
 
 
 # ---------- 共享 Pydantic 模型（Planner / Supervisor 等共用）----------
@@ -55,7 +62,7 @@ class SubTask(BaseModel):
         default="faq",
         description=(
             "faq=知识库 / pdf=文档库 / financial_query=结构化财务查询 / "
-            "general=无需检索"
+            "web_search=联网检索 / general=无需检索"
         ),
     )
 

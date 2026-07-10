@@ -14,7 +14,7 @@ _COMPONENT_MAP = {
     "route_query": "app.agents.components.supervisor",
     "risk_triage_node": "app.agents.components.risk_triage",
     "risk_triage_edge": "app.agents.components.risk_triage",
-    "general_agent": "app.agents.components.general_agent",
+    # general_agent 与同名子包冲突，惰性导入会拿到 module 而非 node 函数；请从 general_agent.node 导入。
     "final_answer_node": "app.agents.components.final_answer",
 }
 
@@ -31,6 +31,5 @@ __all__ = [
     "compress_context",
     "analyze_and_route_query", "route_query",
     "risk_triage_node", "risk_triage_edge",
-    "general_agent",
     "final_answer_node",
 ]

@@ -1,7 +1,10 @@
-"""finance_agent：编译后的 RAG Agent 子图。
+"""finance_agent：多 worker 金融检索子图。
 
-Layer 1+2: 作为 components/ 下的一个编译子图节点被主图引用。
-内部使用 Supervisor 框架进行 LLM 动态路由。
+职责与 assistgen 的多工具工作流保持一致：
+1. planner 先做跨能力任务拆分；
+2. 各 worker 分别执行 faq / pdf / financial_query / web_search；
+3. join 收齐各分支结果；
+4. summarize 汇总子任务结果。
 
 ⚠️ 惰性加载：避免 state_mixins.py 导入本包下的 state.py 时
    触发 graph.py → states.py 循环。

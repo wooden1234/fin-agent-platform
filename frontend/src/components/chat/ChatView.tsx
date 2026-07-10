@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { ChatMessage } from './ChatMessage'
 import { ChatInput } from './ChatInput'
 import { HitlBanner } from './HitlBanner'
+import { AgentStepsPanel } from './AgentStepsPanel'
 import { useChatStore } from '@/stores/useChatStore'
 import { useAgentChat } from '@/hooks/useAgentChat'
 
@@ -13,14 +13,14 @@ const quickPrompts = [
 ]
 
 export function ChatView() {
-  const { messages, isGenerating, hitlPending, hitlMessage } = useChatStore()
+  const { messages, isGenerating, hitlPending, hitlMessage, agentSteps } = useChatStore()
   const { sendQuery, resumeAgent, cancelStream } = useAgentChat()
   const [input, setInput] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, isGenerating, hitlPending])
+  }, [messages, isGenerating, hitlPending, agentSteps])
 
   const handleSend = () => {
     const text = input.trim()
@@ -59,15 +59,24 @@ export function ChatView() {
           </div>
         ) : (
           <div className="max-w-4xl mx-auto px-4 py-8">
-            {messages.map((msg) => (
-              <ChatMessage key={msg.id} message={msg} />
-            ))}
-            {isGenerating && (
-              <div className="flex items-center gap-2 text-sm text-slate-500 mb-4">
-                <Loader2 size={16} className="animate-spin text-brand-gold" />
-                正在生成回复…
-              </div>
-            )}
+            {messages.map((msg, index) => {
+              const showStepsBefore =
+                isGenerating &&
+                index === messages.length - 1 &&
+                msg.role === 'assistant'
+              return (
+                <Fragment key={msg.id}>
+                  {showStepsBefore && (
+                    <AgentStepsPanel steps={agentSteps} isGenerating={isGenerating} />
+                  )}
+                  <ChatMessage message={msg} />
+                </Fragment>
+              )
+            })}
+            {isGenerating &&
+              (messages.length === 0 || messages[messages.length - 1].role !== 'assistant') && (
+                <AgentStepsPanel steps={agentSteps} isGenerating={isGenerating} />
+              )}
             <div ref={messagesEndRef} />
           </div>
         )}

@@ -73,8 +73,8 @@ export function Sidebar({
     try {
       const created = await createConversation()
       const conversationId = String(created.conversation_id ?? created.id)
+      resetChat()
       setActiveConversationId(conversationId)
-      setMessages([])
       await refreshConversations()
       onToast('已创建新会话', 'success')
     } catch (error) {

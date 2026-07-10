@@ -50,6 +50,19 @@ export function ChatMessage({ message }: { message: Message }) {
           </div>
         )}
 
+        {!isUser && message.agentSteps && message.agentSteps.length > 0 && (
+          <details className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+            <summary className="cursor-pointer select-none hover:text-slate-700 dark:hover:text-slate-200">
+              已完成分析，查询 {message.agentSteps.length} 个数据源
+            </summary>
+            <ul className="mt-2 space-y-1 pl-3 border-l border-slate-200 dark:border-slate-700">
+              {message.agentSteps.map((step) => (
+                <li key={step.id}>{step.label}</li>
+              ))}
+            </ul>
+          </details>
+        )}
+
         <div
           className={`text-[15px] leading-relaxed ${
             isUser

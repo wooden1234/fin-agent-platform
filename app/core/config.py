@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     FAQ_MIN_RELEVANCE_SCORE: float = 0.35
     PDF_MIN_RELEVANCE_SCORE: float = 0.35
 
+    # 联网搜索。默认关闭，配置 TAVILY_API_KEY 后启用 Tavily。
+    WEB_SEARCH_PROVIDER: str = "tavily"
+    TAVILY_API_KEY: str = ""
+    TAVILY_SEARCH_URL: str = "https://api.tavily.com/search"
+    WEB_SEARCH_MAX_RESULTS: int = 5
+
     # LangGraph Checkpoint（W3 Day 5）：postgres | memory
     AGENT_CHECKPOINT_BACKEND: str = "postgres"
 

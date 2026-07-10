@@ -31,13 +31,12 @@ def financial_query_output(
     *,
     answer: str,
     context: str | None = None,
-    citations: list[dict] | None = None,
     step: str,
 ) -> dict:
+    """结构化 SQL 查询输出：只返回答案，不写入 citations。"""
     query = str(state.get("financial_query_text") or query_from_state(state))
     return {
         "messages": [AIMessage(content=answer)],
-        "citations": citations or [],
         "task_results": [
             {
                 "sub_task_id": sub_task_id_from_state(state),

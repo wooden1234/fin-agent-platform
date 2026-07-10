@@ -1,6 +1,6 @@
 """主图编译：START → guardrails → context_compressor → supervisor → risk_triage → plan_agent → final_answer → END。
 
-plan_agent 作为独立子图（planner → supervisor → [faq | pdf | financial_query_agent] → summarize），主图只感知一个节点。
+plan_agent 作为独立子图（planner → workers → join → summarize），主图只感知一个节点。
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ from app.agents.components import (
     compress_context,
     analyze_and_route_query, route_query,
     risk_triage_node, risk_triage_edge,
-    general_agent,
     final_answer_node,
 )
+from app.agents.components.general_agent.node import general_agent
 from app.agents.components.finance_agent import finance_agent as _finance_agent_graph
 
 _compiled_graph = None

@@ -6,6 +6,11 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from app.agents.checkpoint import make_thread_config
 from app.agents.graph import get_graph
+from app.api.agent_progress import (
+    VISIBLE_TASK_NODES,
+    build_public_step_event,
+    map_node_to_public_step,
+)
 from app.core.logger import get_logger
 from app.core.security import get_current_user
 from app.models.user import User
@@ -64,15 +69,75 @@ async def agent_query(
     thread_config = make_thread_config(thread_id)
     graph = get_graph()
     input_payload = {"messages": [HumanMessage(content=query)]}
-    STREAMABLE_NODES = frozenset({"faq_agent", "pdf_agent", "general_agent"})
+    STREAMABLE_NODES = frozenset({
+        "faq_agent",
+        "pdf_agent",
+        "general_agent",
+        "web_search_agent",
+        "summarize",
+    })
     async def process_stream():
         assistant_full_response = ""
+        generating_answer_active = False
         try:
-            async for msg, metadata in graph.astream(
+            async for chunk in graph.astream(
                 input_payload,
                 config=thread_config,
-                stream_mode="messages",
+                stream_mode=["messages", "tasks", "updates"],
+                subgraphs=True,
             ):
+                if not isinstance(chunk, tuple) or len(chunk) != 3:
+                    continue
+                namespace, mode, data = chunk
+                ns_tuple = namespace if isinstance(namespace, tuple) else ()
+
+                if mode == "tasks" and isinstance(data, dict):
+                    node_name = data.get("name")
+                    if not node_name:
+                        continue
+
+                    if "result" in data or "error" in data:
+                        if node_name == "supervisor" and not ns_tuple:
+                            result_payload = data.get("result")
+                            if isinstance(result_payload, dict):
+                                route = result_payload.get("route")
+                                if route:
+                                    yield _sse({"type": "meta", "route": route})
+                        if node_name == "risk_triage":
+                            result_payload = data.get("result")
+                            if isinstance(result_payload, dict):
+                                risk_level = result_payload.get("risk_level")
+                                if risk_level:
+                                    yield _sse({"type": "meta", "risk_level": risk_level})
+
+                    if node_name not in VISIBLE_TASK_NODES:
+                        continue
+
+                    public_step = map_node_to_public_step(node_name)
+                    if not public_step:
+                        continue
+
+                    if "input" in data and "result" not in data and "error" not in data:
+                        event = build_public_step_event(public_step, "running")
+                        if event:
+                            if public_step == "generating_answer":
+                                generating_answer_active = True
+                            yield _sse(event)
+                        continue
+
+                    if "result" in data or "error" in data:
+                        status = "error" if data.get("error") else "done"
+                        event = build_public_step_event(public_step, status)
+                        if event:
+                            if public_step == "generating_answer" and status == "done":
+                                generating_answer_active = False
+                            yield _sse(event)
+                    continue
+
+                if mode != "messages":
+                    continue
+
+                msg, metadata = data
                 node = metadata.get("langgraph_node")
                 if node not in STREAMABLE_NODES:
                     continue
@@ -89,6 +154,11 @@ async def agent_query(
                 )
                 if not incremental_content:
                     continue
+                if generating_answer_active:
+                    event = build_public_step_event("generating_answer", "done")
+                    if event:
+                        yield _sse(event)
+                    generating_answer_active = False
                 assistant_full_response += incremental_content
                 yield _sse({"type": "token", "content": incremental_content})
             
@@ -98,6 +168,11 @@ async def agent_query(
             final_response = _extract_final_response(values)
             if not assistant_full_response and final_response:
                 assistant_full_response = final_response
+            if generating_answer_active:
+                event = build_public_step_event("generating_answer", "done")
+                if event:
+                    yield _sse(event)
+                generating_answer_active = False
             yield _sse({
                 "type": "done",
                 "content": final_response,

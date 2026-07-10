@@ -1,10 +1,12 @@
 import { useRef } from 'react'
 import { SSEClient } from '@/services/sse/SSEClient'
+import { createConversation } from '@/services/api/conversations'
 import { getToken } from '@/services/api/client'
 import { useChatStore } from '@/stores/useChatStore'
 import type { AgentSSEEvent } from '@/types/events'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
+const PERSISTED_CONVERSATION_ID_RE = /^\d+$/
 
 function buildAgentForm(fields: Record<string, string>): FormData {
   const form = new FormData()
@@ -27,8 +29,27 @@ export function useAgentChat() {
     addMessage,
     updateMessage,
     setGenerating,
+    resetAgentSteps,
+    upsertAgentStep,
+    agentSteps,
     setHitlPending,
   } = useChatStore()
+
+  const ensureConversationId = async (): Promise<string> => {
+    const currentConversationId = useChatStore.getState().activeConversationId
+    if (currentConversationId && PERSISTED_CONVERSATION_ID_RE.test(currentConversationId)) {
+      return currentConversationId
+    }
+
+    const created = await createConversation()
+    const conversationId = String(created.conversation_id ?? created.id ?? '')
+    if (!conversationId) {
+      throw new Error('创建会话失败：缺少 conversation_id')
+    }
+
+    setActiveConversationId(conversationId)
+    return conversationId
+  }
 
   const runStream = async (
     endpoint: '/api/agent/query' | '/api/agent/resume',
@@ -38,6 +59,16 @@ export function useAgentChat() {
     let assistantMessageId = ''
 
     const handleEvent = (event: AgentSSEEvent) => {
+      if (event.type === 'step') {
+        upsertAgentStep({
+          id: event.id,
+          label: event.label,
+          status: event.status,
+          category: event.category,
+          shortLabel: event.short_label,
+        })
+      }
+
       if (event.type === 'token') {
         contentBuffer += event.content
 
@@ -80,8 +111,10 @@ export function useAgentChat() {
             citations: event.citations,
             route: event.route,
             riskLevel: event.risk_level,
+            agentSteps: [...useChatStore.getState().agentSteps],
           })
         }
+        resetAgentSteps()
         setGenerating(false)
         setHitlPending(false)
       }
@@ -103,6 +136,7 @@ export function useAgentChat() {
           })
         }
         setGenerating(false)
+        resetAgentSteps()
       }
 
       if (event.type === 'error') {
@@ -120,6 +154,7 @@ export function useAgentChat() {
         }
         setGenerating(false)
         setHitlPending(false)
+        resetAgentSteps()
       }
     }
 
@@ -128,7 +163,8 @@ export function useAgentChat() {
       headers: authHeaders(),
       body: buildAgentForm(fields),
       onConversationId: (conversationId) => {
-        if (!activeConversationId) {
+        const currentConversationId = useChatStore.getState().activeConversationId
+        if (!currentConversationId) {
           setActiveConversationId(conversationId)
         }
       },
@@ -142,11 +178,13 @@ export function useAgentChat() {
         })
         setGenerating(false)
         setHitlPending(false)
+        resetAgentSteps()
       },
       onComplete: () => {
         const stillGenerating = useChatStore.getState().isGenerating
         if (stillGenerating) {
           setGenerating(false)
+          resetAgentSteps()
         }
       },
     })
@@ -160,22 +198,37 @@ export function useAgentChat() {
     const trimmed = query.trim()
     if (!trimmed) return
 
-    addMessage({
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: trimmed,
-      timestamp: Date.now(),
-    })
+    try {
+      const conversationId = await ensureConversationId()
 
-    setGenerating(true)
-    setHitlPending(false)
+      addMessage({
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content: trimmed,
+        timestamp: Date.now(),
+      })
 
-    const fields: Record<string, string> = { query: trimmed }
-    if (activeConversationId) {
-      fields.conversation_id = activeConversationId
+      setGenerating(true)
+      resetAgentSteps()
+      setHitlPending(false)
+
+      const fields: Record<string, string> = {
+        query: trimmed,
+        conversation_id: conversationId,
+      }
+
+      await runStream('/api/agent/query', fields)
+    } catch (error) {
+      addMessage({
+        id: `assistant-error-${Date.now()}`,
+        role: 'assistant',
+        content: error instanceof Error ? error.message : '创建会话失败',
+        timestamp: Date.now(),
+      })
+      setGenerating(false)
+      setHitlPending(false)
+      resetAgentSteps()
     }
-
-    await runStream('/api/agent/query', fields)
   }
 
   const resumeAgent = async (humanInput: string) => {
@@ -192,6 +245,7 @@ export function useAgentChat() {
     })
 
     setGenerating(true)
+    resetAgentSteps()
     setHitlPending(false)
 
     await runStream('/api/agent/resume', {
@@ -204,7 +258,8 @@ export function useAgentChat() {
     clientRef.current?.cancel()
     clientRef.current = null
     setGenerating(false)
+    resetAgentSteps()
   }
 
-  return { sendQuery, resumeAgent, cancelStream }
+  return { sendQuery, resumeAgent, cancelStream, agentSteps }
 }
